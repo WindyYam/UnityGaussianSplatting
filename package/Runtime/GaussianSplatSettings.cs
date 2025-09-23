@@ -6,8 +6,6 @@ namespace GaussianSplatting.Runtime
 {
     public enum TransparencyMode
     {
-        // sort splats within each gaussian point cloud, blend back to front
-        SortedBlended,
         // no sorting, transparency is stochastic (random) and noisy
         Stochastic,
         // no sorting, transparency is stochastic (half tone) and less noisy
@@ -57,10 +55,7 @@ namespace GaussianSplatting.Runtime
         static GaussianSplatSettings ms_Instance;
 
         [Tooltip("Gaussian splat transparency rendering algorithm")]
-        public TransparencyMode m_Transparency = TransparencyMode.SortedBlended;
-
-        [Range(1,30)] [Tooltip("Sort splats only every N frames")]
-        public int m_SortNthFrame = 1;
+        public TransparencyMode m_Transparency = TransparencyMode.Stochastic;
 
         [Tooltip("How to filter temporal transparency")]
         public TemporalFilter m_TemporalFilter = TemporalFilter.Temporal;
@@ -74,11 +69,14 @@ namespace GaussianSplatting.Runtime
         [Tooltip("Show only Spherical Harmonics contribution, using gray color")]
         public bool m_SHOnly;
 
+        // Remove the vertex shader mode option since it's now the only mode
+        // [Tooltip("Use vertex shader mode for better WebGL compatibility (disables compute shaders and temporal filtering)")]
+        // public bool m_UseVertexShaderMode;
+
         internal bool isDebugRender => m_RenderMode != DebugRenderMode.Splats;
 
-        internal bool needSorting =>
-            (!isDebugRender && m_Transparency == TransparencyMode.SortedBlended) ||
-            m_RenderMode == DebugRenderMode.DebugBoxes;
+        // Sorting is no longer needed since we only use stochastic rendering
+        internal bool needSorting => m_RenderMode == DebugRenderMode.DebugBoxes;
 
         internal bool resourcesFound { get; private set; }
         bool resourcesLoadAttempted;
@@ -86,6 +84,7 @@ namespace GaussianSplatting.Runtime
         internal Shader shaderComposite { get; private set; }
         internal Shader shaderDebugPoints { get; private set; }
         internal Shader shaderDebugBoxes { get; private set; }
+        // Compute shader is optional now since we use vertex shader mode
         internal ComputeShader csUtilities { get; private set; }
 
         void Awake()
@@ -109,9 +108,8 @@ namespace GaussianSplatting.Runtime
             csUtilities = Resources.Load<ComputeShader>("GaussianSplatUtilities");
 
             resourcesFound =
-                shaderSplats != null && shaderComposite != null && shaderDebugPoints != null && shaderDebugBoxes != null &&
-                csUtilities != null &&
-                SystemInfo.supportsComputeShaders;
+                shaderSplats != null && shaderComposite != null && shaderDebugPoints != null && shaderDebugBoxes != null;
+            // Compute shaders are optional for vertex shader mode
             UpdateGlobalOptions();
         }
 

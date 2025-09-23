@@ -11,7 +11,6 @@ namespace GaussianSplatting.Editor
     public class GaussianSplatSettingsEditor : UnityEditor.Editor
     {
         SerializedProperty m_Transparency;
-        SerializedProperty m_SortNthFrame;
         SerializedProperty m_TemporalFilter;
         SerializedProperty m_FrameInfluence;
         SerializedProperty m_VarianceClampScale;
@@ -22,7 +21,6 @@ namespace GaussianSplatting.Editor
         public void OnEnable()
         {
             m_Transparency = serializedObject.FindProperty("m_Transparency");
-            m_SortNthFrame = serializedObject.FindProperty("m_SortNthFrame");
             m_TemporalFilter = serializedObject.FindProperty("m_TemporalFilter");
             m_FrameInfluence = serializedObject.FindProperty("m_FrameInfluence");
             m_VarianceClampScale = serializedObject.FindProperty("m_VarianceClampScale");
@@ -37,18 +35,12 @@ namespace GaussianSplatting.Editor
 
             EditorGUILayout.Space();
             EditorGUILayout.PropertyField(m_Transparency);
-            if (m_Transparency.intValue is (int) TransparencyMode.SortedBlended)
+            
+            EditorGUILayout.PropertyField(m_TemporalFilter);
+            if (m_TemporalFilter.intValue != (int)TemporalFilter.None)
             {
-                EditorGUILayout.PropertyField(m_SortNthFrame);
-            }
-            if (m_Transparency.intValue != (int) TransparencyMode.SortedBlended)
-            {
-                EditorGUILayout.PropertyField(m_TemporalFilter);
-                if (m_TemporalFilter.intValue != (int)TemporalFilter.None)
-                {
-                    EditorGUILayout.PropertyField(m_FrameInfluence);
-                    EditorGUILayout.PropertyField(m_VarianceClampScale);
-                }
+                EditorGUILayout.PropertyField(m_FrameInfluence);
+                EditorGUILayout.PropertyField(m_VarianceClampScale);
             }
 
             EditorGUILayout.Space();
