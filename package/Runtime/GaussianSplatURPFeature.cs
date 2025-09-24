@@ -87,7 +87,6 @@ namespace GaussianSplatting.Runtime
                         CoreUtils.SetRenderTarget(commandBuffer, data.SourceTexture, data.SourceDepth, ClearFlag.None);
                     }
                     system.SortAllSplats(data.CameraData.camera, commandBuffer);
-                    system.CacheViewDataForAllSplats(data.CameraData.camera, commandBuffer);
                     system.RenderAllSplats(data.CameraData.camera, commandBuffer);
                     if (usingRT)
                     {

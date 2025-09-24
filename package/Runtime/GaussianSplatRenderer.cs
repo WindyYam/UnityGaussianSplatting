@@ -168,13 +168,6 @@ namespace GaussianSplatting.Runtime
         }
 
         // ReSharper disable once MemberCanBePrivate.Global - used by HDRP/URP features that are not always compiled
-        public void CacheViewDataForAllSplats(Camera cam, CommandBuffer cmb)
-        {
-            // View data calculation is now done in vertex shader, so this method is no longer needed
-            // Keep for compatibility with external code that might call it
-        }
-
-        // ReSharper disable once MemberCanBePrivate.Global - used by HDRP/URP features that are not always compiled
         public void RenderAllSplats(Camera cam, CommandBuffer cmb)
         {
             EnsureMaterials();

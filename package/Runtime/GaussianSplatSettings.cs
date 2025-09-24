@@ -110,8 +110,8 @@ namespace GaussianSplatting.Runtime
 
             resourcesFound =
                 shaderSplats != null && shaderComposite != null && shaderDebugPoints != null && shaderDebugBoxes != null;
-             // Compute shaders are optional for vertex shader mode
-             UpdateGlobalOptions();
+            // Compute shaders are optional for vertex shader mode
+            UpdateGlobalOptions();
         }
 
         void OnValidate()
