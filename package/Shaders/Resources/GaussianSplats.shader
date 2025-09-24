@@ -189,10 +189,6 @@ FragOut frag (v2f i)
 
     if (sgu_transparencyMode == 0)
     {
-        i.col.rgb *= alpha; // premultiply
-    }
-    else if(sgu_transparencyMode == 1)
-    {
         uint3 coord = uint3(i.vertex.x, i.vertex.y, i.idx);
         uint3 hash = pcg3d16(coord);
         half cutoff = (hash.x & 0xFFFF) / 65535.0;

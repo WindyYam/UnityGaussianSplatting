@@ -220,7 +220,6 @@ namespace GaussianSplatting.Runtime
 
                 // Set dummy view data buffers for shader compatibility
 
-                mpb.SetBuffer(GaussianSplatRenderer.Props.OrderBuffer, gs.m_GpuSortKeys);
                 mpb.SetFloat(GaussianSplatRenderer.Props.SplatScale, gs.m_SplatScale);
                 mpb.SetFloat(GaussianSplatRenderer.Props.SplatOpacityScale, gs.m_OpacityScale);
                 mpb.SetFloat(GaussianSplatRenderer.Props.SplatSize, settings.m_PointDisplaySize);
@@ -362,7 +361,6 @@ namespace GaussianSplatting.Runtime
         public int m_SHOrder = 3;
 
         int m_SplatCount; // initially same as asset splat count
-        internal GraphicsBuffer m_GpuSortKeys; // Keep for shader compatibility but just identity buffer
         GraphicsBuffer m_GpuPosData;
         GraphicsBuffer m_GpuOtherData;
         GraphicsBuffer m_GpuSHData;
@@ -389,7 +387,6 @@ namespace GaussianSplatting.Runtime
             public static readonly int SplatChunkCount = Shader.PropertyToID("_SplatChunkCount");
             public static readonly int SplatViewData = Shader.PropertyToID("_SplatViewData");
             public static readonly int PrevSplatViewData = Shader.PropertyToID("_PrevSplatViewData");
-            public static readonly int OrderBuffer = Shader.PropertyToID("_OrderBuffer");
             public static readonly int SplatScale = Shader.PropertyToID("_SplatScale");
             public static readonly int SplatOpacityScale = Shader.PropertyToID("_SplatOpacityScale");
             public static readonly int SplatSize = Shader.PropertyToID("_SplatSize");
@@ -465,15 +462,6 @@ namespace GaussianSplatting.Runtime
                 m_GpuChunksValid = false;
             }
             
-            // Create identity sort keys buffer for shader compatibility (no sorting in stochastic mode)
-            m_GpuSortKeys = new GraphicsBuffer(GraphicsBuffer.Target.Vertex, m_Asset.splatCount, 4) { name = "GaussianSortKeys" };
-            // Initialize with identity order (0, 1, 2, 3, ...)
-            var identityKeys = new uint[m_Asset.splatCount];
-            for (uint i = 0; i < m_Asset.splatCount; i++)
-            {
-                identityKeys[i] = i;
-            }
-            m_GpuSortKeys.SetData(identityKeys);
         }
 
         bool resourcesAreSetUp => GaussianSplatSettings.instance.resourcesFound;
@@ -525,8 +513,6 @@ namespace GaussianSplatting.Runtime
             DisposeBuffer(ref m_GpuOtherData);
             DisposeBuffer(ref m_GpuSHData);
             DisposeBuffer(ref m_GpuChunks);
-
-            DisposeBuffer(ref m_GpuSortKeys);
 
             m_SplatCount = 0;
             m_GpuChunksValid = false;
