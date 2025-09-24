@@ -219,8 +219,6 @@ namespace GaussianSplatting.Runtime
                 mpb.SetVector(GaussianSplatRenderer.Props.VecWorldSpaceCameraPos, camPos);
 
                 // Set dummy view data buffers for shader compatibility
-                mpb.SetBuffer(GaussianSplatRenderer.Props.SplatViewData, gs.m_GpuView);
-                mpb.SetBuffer(GaussianSplatRenderer.Props.PrevSplatViewData, gs.m_GpuView);
 
                 mpb.SetBuffer(GaussianSplatRenderer.Props.OrderBuffer, gs.m_GpuSortKeys);
                 mpb.SetFloat(GaussianSplatRenderer.Props.SplatScale, gs.m_SplatScale);
@@ -371,8 +369,6 @@ namespace GaussianSplatting.Runtime
         Texture m_GpuColorData;
         internal GraphicsBuffer m_GpuChunks;
         internal bool m_GpuChunksValid;
-        internal GraphicsBuffer m_GpuView;
-        internal GraphicsBuffer m_GpuViewPrev; // previous frame view data
         internal int m_FrameCounter;
         GaussianSplatAsset m_PrevAsset;
         Hash128 m_PrevHash;
@@ -433,8 +429,6 @@ namespace GaussianSplatting.Runtime
             m_Asset.colorData != null;
         public bool HasValidRenderSetup => m_GpuPosData != null && m_GpuOtherData != null && m_GpuChunks != null;
 
-        const int kGpuViewDataSize = 40;
-
         void CreateResourcesForAsset()
         {
             if (!HasValidAsset)
@@ -470,12 +464,6 @@ namespace GaussianSplatting.Runtime
                     UnsafeUtility.SizeOf<GaussianSplatAsset.ChunkInfo>()) {name = "GaussianChunkData"};
                 m_GpuChunksValid = false;
             }
-
-            // For WebGL compatibility, we still need view buffers for temporal filtering
-            // but they won't be populated via compute shader. Use Vertex target instead of Structured.
-            m_GpuView = new GraphicsBuffer(GraphicsBuffer.Target.Vertex, m_Asset.splatCount, kGpuViewDataSize) { name = "GaussianViewData" };
-            m_GpuViewPrev?.Dispose();
-            m_GpuViewPrev = null;
             
             // Create identity sort keys buffer for shader compatibility (no sorting in stochastic mode)
             m_GpuSortKeys = new GraphicsBuffer(GraphicsBuffer.Target.Vertex, m_Asset.splatCount, 4) { name = "GaussianSortKeys" };
@@ -521,7 +509,6 @@ namespace GaussianSplatting.Runtime
             mat.SetInteger(Props.SplatFormat, (int)format);
             mat.SetInteger(Props.SplatCount, m_SplatCount);
             mat.SetInteger(Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
-            mat.SetBuffer(Props.PrevSplatViewData, m_GpuViewPrev ?? m_GpuView);
         }
 
         static void DisposeBuffer(ref GraphicsBuffer buf)
@@ -539,8 +526,6 @@ namespace GaussianSplatting.Runtime
             DisposeBuffer(ref m_GpuSHData);
             DisposeBuffer(ref m_GpuChunks);
 
-            DisposeBuffer(ref m_GpuView);
-            DisposeBuffer(ref m_GpuViewPrev);
             DisposeBuffer(ref m_GpuSortKeys);
 
             m_SplatCount = 0;

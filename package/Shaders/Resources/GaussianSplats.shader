@@ -25,7 +25,6 @@ CGPROGRAM
 
 #include "GaussianSplatting.hlsl"
 
-StructuredBuffer<uint> _OrderBuffer;
 float _SplatScale;
 float _SplatOpacityScale;
 uint _SHOrder;
@@ -54,12 +53,6 @@ cbuffer SplatGlobalUniforms // match struct SplatGlobalUniforms in C#
 	uint sgu_frameOffset;
 }
 
-// For temporal filtering - previous frame view data and current frame view data
-StructuredBuffer<SplatViewData> _SplatViewData;
-StructuredBuffer<SplatViewData> _PrevSplatViewData;
-ByteAddressBuffer _SplatSelectedBits;
-uint _SplatBitsValid;
-
 // Helper function to decompose 2D covariance into screen-space axes
 void DecomposeCovariance(float3 cov2d, out float2 v1, out float2 v2)
 {
@@ -81,8 +74,6 @@ v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
     v2f o = (v2f)0;
     
     // Handle sorted vs unsorted rendering (always stochastic now)
-	if (sgu_transparencyMode == 0)
-		instID = _OrderBuffer[instID];
 	o.idx = instID + sgu_frameOffset;
 	
     // Always use vertex shader mode - calculate everything here
@@ -145,18 +136,6 @@ v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
     float2 currentNDC = (centerClipPos.xy / centerClipPos.w) * 0.5 + 0.5;
     float2 prevNDC = currentNDC; // For now, assume no motion (could be enhanced with actual previous frame data)
     o.vel = currentNDC - prevNDC;
-
-	// Handle selection visualization
-	if (_SplatBitsValid)
-	{
-		uint wordIdx = instID / 32;
-		uint bitIdx = instID & 31;
-		uint selVal = _SplatSelectedBits.Load(wordIdx * 4);
-		if (selVal & (1 << bitIdx))
-		{
-			o.col.a = -1; // Mark as selected
-		}
-	}
 	
 	FlipProjectionIfBackbuffer(o.vertex);
     return o;
