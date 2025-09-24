@@ -55,7 +55,13 @@ namespace GaussianSplatting.Runtime
                     Camera.onPreCull += OnPreCullCamera;
             }
 
-            m_Splats.Add(r, new MaterialPropertyBlock());
+            var mpb = new MaterialPropertyBlock();
+            // Set immutable splat data buffers once during registration if resources are ready
+            if (r.HasValidRenderSetup)
+            {
+                r.SetAssetDataOnMaterial(mpb);
+            }
+            m_Splats.Add(r, mpb);
         }
 
         public void UnregisterSplat(GaussianSplatRenderer r)
@@ -65,6 +71,14 @@ namespace GaussianSplatting.Runtime
             m_Splats.Remove(r);
             if (m_Splats.Count == 0)
                 CleanupAfterAllSplatsDeleted();
+        }
+
+        public void UpdateSplatAssetData(GaussianSplatRenderer r)
+        {
+            if (m_Splats.TryGetValue(r, out var mpb))
+            {
+                r.SetAssetDataOnMaterial(mpb);
+            }
         }
 
         void CleanupAfterAllSplatsDeleted()
@@ -197,11 +211,8 @@ namespace GaussianSplatting.Runtime
                 var matrix = gs.transform.localToWorldMatrix;
 
                 var mpb = kvp.Item2;
-                mpb.Clear();
-
-                gs.SetAssetDataOnMaterial(mpb);
-
-                mpb.SetBuffer(GaussianSplatRenderer.Props.SplatChunks, gs.m_GpuChunks);
+                // No need to clear and reset immutable buffers - they were set during registration
+                // Only set per-frame varying properties
 
                 // Always use vertex shader mode - pass matrices for vertex shader calculation
                 Matrix4x4 matView = cam.worldToCameraMatrix;
@@ -217,8 +228,6 @@ namespace GaussianSplatting.Runtime
                 mpb.SetMatrix(GaussianSplatRenderer.Props.MatrixWorldToObject, matW2O);
                 mpb.SetVector(GaussianSplatRenderer.Props.VecScreenParams, screenPar);
                 mpb.SetVector(GaussianSplatRenderer.Props.VecWorldSpaceCameraPos, camPos);
-
-                // Set dummy view data buffers for shader compatibility
 
                 mpb.SetFloat(GaussianSplatRenderer.Props.SplatScale, gs.m_SplatScale);
                 mpb.SetFloat(GaussianSplatRenderer.Props.SplatOpacityScale, gs.m_OpacityScale);
@@ -309,9 +318,24 @@ namespace GaussianSplatting.Runtime
             GaussianSplatSettings settings = GaussianSplatSettings.instance;
             if (!settings.isDebugRender)
             {
-                // Set up render targets for temporal filtering - use basic WebGL compatible formats
-                m_CommandBuffer.GetTemporaryRT(GaussianSplatRenderer.Props.GaussianSplatRT, -1, -1, 0, FilterMode.Point, RenderTextureFormat.ARGB32);
-                m_CommandBuffer.GetTemporaryRT(GaussianSplatRenderer.Props.GaussianSplatMotionRT, -1, -1, 0, FilterMode.Point, RenderTextureFormat.ARGB32);
+                // Set up render targets for temporal filtering - ensure WebGPU compatibility
+                // Use ARGB32 for color target (matches FragOut.col : SV_Target0 - 4 components)
+                // Use RG32 for motion target (matches FragOut.motion : SV_Target1 - 2 components) 
+                // Create explicit descriptors so we can control sRGB/linear formats and avoid implicit gamma conversion
+                int rtW = cam.pixelWidth;
+                int rtH = cam.pixelHeight;
+                // Choose a color format that matches the active color space: use sRGB format when in Gamma, linear format when in Linear.
+                GraphicsFormat colorGfxFormat = QualitySettings.activeColorSpace == ColorSpace.Linear
+                    ? GraphicsFormat.R8G8B8A8_UNorm
+                    : GraphicsFormat.R8G8B8A8_SRGB;
+                // Motion needs a linear floating format (no sRGB)
+                GraphicsFormat motionGfxFormat = GraphicsFormat.R16G16_SFloat;
+
+                var descColor = new RenderTextureDescriptor(rtW, rtH, colorGfxFormat, 0) { msaaSamples = 1, useMipMap = false, autoGenerateMips = false };
+                var descMotion = new RenderTextureDescriptor(rtW, rtH, motionGfxFormat, 0) { msaaSamples = 1, useMipMap = false, autoGenerateMips = false };
+
+                m_CommandBuffer.GetTemporaryRT(GaussianSplatRenderer.Props.GaussianSplatRT, descColor, FilterMode.Point);
+                m_CommandBuffer.GetTemporaryRT(GaussianSplatRenderer.Props.GaussianSplatMotionRT, descMotion, FilterMode.Point);
                 m_CommandBuffer.SetRenderTarget(new RenderTargetIdentifier[] { GaussianSplatRenderer.Props.GaussianSplatRT, GaussianSplatRenderer.Props.GaussianSplatMotionRT }, BuiltinRenderTextureType.CurrentActive);
                 m_CommandBuffer.ClearRenderTarget(RTClearFlags.Color, new Color(0, 0, 0, 0), 0, 0);
             }
@@ -483,16 +507,22 @@ namespace GaussianSplatting.Runtime
 
             EnsureSorterAndRegister();
             CreateResourcesForAsset();
+            // Update the MaterialPropertyBlock with asset data after creating resources
+            UpdateAssetDataInRenderSystem();
         }
 
 
 
         internal void SetAssetDataOnMaterial(MaterialPropertyBlock mat)
         {
+            if (!HasValidRenderSetup)
+                return;
+                
             mat.SetBuffer(Props.SplatPos, m_GpuPosData);
             mat.SetBuffer(Props.SplatOther, m_GpuOtherData);
             mat.SetBuffer(Props.SplatSH, m_GpuSHData);
             mat.SetTexture(Props.SplatColor, m_GpuColorData);
+            mat.SetBuffer(Props.SplatChunks, m_GpuChunks);
             uint format = (uint)m_Asset.posFormat | ((uint)m_Asset.scaleFormat << 8) | ((uint)m_Asset.shFormat << 16);
             mat.SetInteger(Props.SplatFormat, (int)format);
             mat.SetInteger(Props.SplatCount, m_SplatCount);
@@ -536,11 +566,21 @@ namespace GaussianSplatting.Runtime
                 {
                     DisposeResourcesForAsset();
                     CreateResourcesForAsset();
+                    // Update the MaterialPropertyBlock with new asset data
+                    UpdateAssetDataInRenderSystem();
                 }
                 else
                 {
                     Debug.LogError($"{nameof(GaussianSplatRenderer)} component is not set up correctly (Resource references are missing), or platform does not support compute shaders");
                 }
+            }
+        }
+
+        void UpdateAssetDataInRenderSystem()
+        {
+            if (m_Registered)
+            {
+                GaussianSplatRenderSystem.instance.UpdateSplatAssetData(this);
             }
         }
 
