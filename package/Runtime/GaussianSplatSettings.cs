@@ -105,12 +105,13 @@ namespace GaussianSplatting.Runtime
             shaderComposite = Resources.Load<Shader>("GaussianComposite");
             shaderDebugPoints = Resources.Load<Shader>("GaussianDebugRenderPoints");
             shaderDebugBoxes = Resources.Load<Shader>("GaussianDebugRenderBoxes");
-            csUtilities = Resources.Load<ComputeShader>("GaussianSplatUtilities");
+            // Do not load compute shader - compute support is intentionally stripped; renderer uses vertex/fragment shaders only
+            // csUtilities = Resources.Load<ComputeShader>("GaussianSplatUtilities");
 
             resourcesFound =
                 shaderSplats != null && shaderComposite != null && shaderDebugPoints != null && shaderDebugBoxes != null;
-            // Compute shaders are optional for vertex shader mode
-            UpdateGlobalOptions();
+             // Compute shaders are optional for vertex shader mode
+             UpdateGlobalOptions();
         }
 
         void OnValidate()

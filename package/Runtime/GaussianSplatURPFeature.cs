@@ -52,7 +52,7 @@ namespace GaussianSplatting.Runtime
                     RenderTextureDescriptor rtDesc = cameraData.cameraTargetDescriptor;
                     rtDesc.depthBufferBits = 0;
                     rtDesc.msaaSamples = 1;
-                    rtDesc.graphicsFormat = GraphicsFormat.R16G16B16A16_SFloat;
+                    rtDesc.graphicsFormat = GraphicsFormat.R8G8B8A8_UNorm;
                     var textureHandle = UniversalRenderer.CreateRenderGraphTexture(renderGraph, rtDesc, GaussianSplatRTName, true);
                     passData.GaussianSplatRT = textureHandle;
                     builder.UseTexture(textureHandle, AccessFlags.Write);

@@ -60,7 +60,7 @@ namespace GaussianSplatting.Runtime
                 desc.height = m_CurHeight;
                 desc.msaaSamples = 1;
                 desc.volumeDepth = 1;
-                desc.graphicsFormat = GraphicsFormat.R16G16B16A16_SFloat;
+                desc.graphicsFormat = GraphicsFormat.R8G8B8A8_UNorm;
                 desc.dimension = TextureDimension.Tex2D;
                 m_AccumulationTexture = new RenderTexture(desc);
                 m_TempTexture = new RenderTexture(desc);

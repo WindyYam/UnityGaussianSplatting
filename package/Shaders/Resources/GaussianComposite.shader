@@ -4,7 +4,6 @@ Shader "Hidden/Gaussian Splatting/Composite"
 CGINCLUDE
 #pragma vertex vert
 #pragma fragment frag
-#pragma require compute
 
 #include "UnityCG.cginc"
 
