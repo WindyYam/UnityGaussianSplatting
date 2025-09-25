@@ -13,13 +13,12 @@ using UnityEngine.Rendering.RenderGraphModule;
 
 namespace GaussianSplatting.Runtime
 {
-    // Note: I have no idea what is the purpose of ScriptableRendererFeature vs ScriptableRenderPass, which one of those
-    // is supposed to do resource management vs logic, etc. etc. Code below "seems to work" but I'm just fumbling along,
-    // without understanding any of it.
-    //
-    // ReSharper disable once InconsistentNaming
     class GaussianSplatURPFeature : ScriptableRendererFeature
     {
+        [Header("Gaussian Splat Fixed Resolution Override")]
+        [SerializeField] bool m_OverrideResolution = false;
+        [SerializeField] int m_MaxSize = 1280;
+
         class GSRenderPass : ScriptableRenderPass
         {
             const string GaussianSplatRTName = "_GaussianSplatRT";
@@ -34,6 +33,10 @@ namespace GaussianSplatting.Runtime
                 internal TextureHandle SourceTexture;
                 internal TextureHandle SourceDepth;
                 internal TextureHandle GaussianSplatRT;
+            }
+
+            public GSRenderPass()
+            {
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
@@ -53,9 +56,10 @@ namespace GaussianSplatting.Runtime
                     rtDesc.depthBufferBits = 0;
                     rtDesc.msaaSamples = 1;
                     rtDesc.graphicsFormat = GraphicsFormat.R8G8B8A8_UNorm;
-                    var textureHandle = UniversalRenderer.CreateRenderGraphTexture(renderGraph, rtDesc, GaussianSplatRTName, true);
-                    passData.GaussianSplatRT = textureHandle;
-                    builder.UseTexture(textureHandle, AccessFlags.Write);
+
+                    var colorHandle = UniversalRenderer.CreateRenderGraphTexture(renderGraph, rtDesc, GaussianSplatRTName, true);
+                    passData.GaussianSplatRT = colorHandle;
+                    builder.UseTexture(colorHandle, AccessFlags.Write);
                 }
                 passData.SourceTexture = resourceData.activeColorTexture;
                 passData.SourceDepth = resourceData.activeDepthTexture;
@@ -103,10 +107,22 @@ namespace GaussianSplatting.Runtime
 
         public override void Create()
         {
-            m_Pass = new GSRenderPass
+            m_Pass = new GSRenderPass()
             {
                 renderPassEvent = RenderPassEvent.BeforeRenderingTransparents
             };
+
+            // Apply render-scale once when the feature is created. 
+            var asset = GraphicsSettings.currentRenderPipeline as UniversalRenderPipelineAsset;
+            if (asset != null)
+            {
+                if (m_OverrideResolution)
+                {
+                    int maxSide = Mathf.Max(Screen.width, Screen.height);
+                    float desiredScale = Mathf.Min(2f, (float)m_MaxSize / (float)maxSide);
+                    asset.renderScale = desiredScale;
+                }
+            }
         }
 
         public override void OnCameraPreCull(ScriptableRenderer renderer, in CameraData cameraData)
@@ -128,6 +144,7 @@ namespace GaussianSplatting.Runtime
 
         protected override void Dispose(bool disposing)
         {
+            // no restore of pipeline asset
             m_Pass = null;
         }
     }

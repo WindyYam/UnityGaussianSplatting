@@ -37,11 +37,14 @@ ENDCG
 
 CGPROGRAM
 Texture2D _GaussianSplatRT;
+SamplerState sampler_GaussianSplatRT;
 half4 frag (v2f i) : SV_Target
 {
-    half4 col = _GaussianSplatRT.Load(int3(i.vertex.xy, 0));
+    // Use UV sampling (correct for fullscreen quad). If the RT is sRGB, Unity will decode automatically.
+    half4 col = _GaussianSplatRT.Sample(sampler_GaussianSplatRT, i.uv);
+    // If your RT is NOT marked sRGB, then decode manually:
     col.rgb = GammaToLinearSpace(col.rgb);
-    col.a = saturate(col.a * 1.5);
+    //col.a = saturate(col.a * 1.5);
     return col;
 }
 ENDCG
