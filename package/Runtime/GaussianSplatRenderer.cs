@@ -197,7 +197,7 @@ namespace GaussianSplatting.Runtime
 
             m_GlobalUniforms ??= new GraphicsBuffer(GraphicsBuffer.Target.Constant, 1, UnsafeUtility.SizeOf<SplatGlobalUniforms>());
             NativeArray<SplatGlobalUniforms> sgu = new(1, Allocator.Temp);
-            sgu[0] = new SplatGlobalUniforms { transparencyMode = (uint)settings.m_Transparency, frameOffset = m_FrameOffset, needMotionVectors = (uint)(settings.m_TemporalFilter != TemporalFilter.None ? 1u : 0u)};
+            sgu[0] = new SplatGlobalUniforms { transparencyMode = (uint)settings.m_Transparency, frameOffset = m_FrameOffset, needMotionVectors = (uint)settings.m_TemporalFilter};
             cmb.SetBufferData(m_GlobalUniforms, sgu);
             m_FrameOffset++;
 
@@ -228,6 +228,10 @@ namespace GaussianSplatting.Runtime
                 
                 mpb.SetMatrix(GaussianSplatRenderer.Props.MatrixMV, currentMatMV);
                 mpb.SetMatrix(GaussianSplatRenderer.Props.PrevMatrixMV, gs.m_PrevMatrixMV);
+                // Compute approximate previous view matrix. Splat objects are static,
+                // so we assume object-to-world hasn't changed. Approximate prevView = prevMV * inverse(currentObjectToWorld) = prevMV * matW2O.
+                Matrix4x4 prevView = gs.m_PrevMatrixMV * matW2O;
+                mpb.SetMatrix(GaussianSplatRenderer.Props.PrevMatrixV, prevView);
                 mpb.SetMatrix(GaussianSplatRenderer.Props.MatrixObjectToWorld, matO2W);
                 mpb.SetMatrix(GaussianSplatRenderer.Props.MatrixWorldToObject, matW2O);
                 mpb.SetVector(GaussianSplatRenderer.Props.VecScreenParams, screenPar);
@@ -356,7 +360,7 @@ namespace GaussianSplatting.Runtime
             if (!settings.isDebugRender)
             {
                 m_CommandBuffer.BeginSample(s_ProfCompose);
-                if (settings.m_TemporalFilter == TemporalFilter.Temporal)
+                if (settings.m_TemporalFilter != TemporalFilter.None)
                 {
                     m_TemporalFilter ??= new GaussianSplatTemporalFilter();
                     m_TemporalFilter.Render(m_CommandBuffer, cam, matComposite, 1,
@@ -432,6 +436,7 @@ namespace GaussianSplatting.Runtime
             public static readonly int SplatSortKeys = Shader.PropertyToID("_SplatSortKeys");
             public static readonly int MatrixMV = Shader.PropertyToID("_MatrixMV");
             public static readonly int PrevMatrixMV = Shader.PropertyToID("_PrevMatrixMV");
+            public static readonly int PrevMatrixV = Shader.PropertyToID("_PrevMatrixV");
             public static readonly int MatrixObjectToWorld = Shader.PropertyToID("_MatrixObjectToWorld");
             public static readonly int MatrixWorldToObject = Shader.PropertyToID("_MatrixWorldToObject");
             public static readonly int VecScreenParams = Shader.PropertyToID("_VecScreenParams");

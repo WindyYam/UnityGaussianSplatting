@@ -31,6 +31,7 @@ uint _SHOrder;
 uint _SHOnly;
 float4x4 _MatrixMV;
 float4x4 _PrevMatrixMV;
+float4x4 _PrevMatrixV;
 float4x4 _MatrixObjectToWorld;
 float4x4 _MatrixWorldToObject;
 float4 _VecScreenParams;
@@ -52,7 +53,7 @@ cbuffer SplatGlobalUniforms // match struct SplatGlobalUniforms in C#
 {
 	uint sgu_transparencyMode;
 	uint sgu_frameOffset;
-	uint sgu_needMotionVectors;
+	uint sgu_needMotionVectors; // Motion vector type, 0: None, 1: Simple(center), 2: Per vertex
 	uint sgu_padding0; // padding to align cbuffer to 16 bytes
 }
 
@@ -107,7 +108,8 @@ v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
     float3 cov2d = CalcCovariance2D(splat.pos, cov3d0, cov3d1, _MatrixMV, UNITY_MATRIX_P, _VecScreenParams, screenCenter2D);
     
     // Update clip position with corrected screen center
-    centerClipPos.xy = (screenCenter2D * 2/_VecScreenParams.xy - 1) * centerClipPos.w;
+    float4 centerClipPosCorrected = centerClipPos;
+    centerClipPosCorrected.xy = (screenCenter2D * 2/_VecScreenParams.xy - 1) * centerClipPos.w;
     
     // Decompose 2D covariance into screen-space axes
     float2 axis1, axis2;
@@ -130,35 +132,65 @@ v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
     
     // Apply screen-space offset
     float2 deltaScreenPos = (quadPos.x * axis1 + quadPos.y * axis2) * 2 / _ScreenParams.xy;
-    o.vertex = centerClipPos;
-    o.vertex.xy += deltaScreenPos * centerClipPos.w;
+    o.vertex = centerClipPosCorrected;
+    o.vertex.xy += deltaScreenPos * centerClipPosCorrected.w;
 
-    // Motion vectors - calculate from current and previous positions only if requested
-    if (sgu_needMotionVectors != 0)
+    // Motion vectors - calculate from center position NDC difference when requested
+    if (sgu_needMotionVectors == 1)
     {
+        // Approximate the motion vector, calc the center movement only
+        // Current center NDC (use corrected center position only, not per-vertex offset)
+        float2 currentCenterNDC = centerClipPos.xy / centerClipPos.w;
+
+        // If current center is outside of frustum, skip motion vector (set to zero)
+        if (abs(currentCenterNDC.x) > 1.0 || abs(currentCenterNDC.y) > 1.0)
+        {
+            o.vel = float2(0.0, 0.0);
+        }
+        else
+        { 
+            // Previous center clip position: project world center with previous view and current projection
+            float4 prevCenterClipPos = mul(UNITY_MATRIX_P, mul(_PrevMatrixV, float4(centerWorldPos, 1)));
+
+            // Previous center NDC
+            float2 prevCenterNDC = prevCenterClipPos.xy / prevCenterClipPos.w;
+            // Motion vector is center NDC difference (approximation, avoids per-vertex offsets)
+            o.vel = currentCenterNDC - prevCenterNDC;
+        }
+    }
+    else if (sgu_needMotionVectors == 2)
+    {
+        // More precise calc but intensive
         float2 currentNDC = (o.vertex.xy / o.vertex.w);
 
-        // Calculate previous position for motion vectors
-        // Project 3D covariance to 2D screen space using previous matrix
-        float2 prevScreenCenter2D;
-        float3 prevCov2d = CalcCovariance2D(splat.pos, cov3d0, cov3d1, _PrevMatrixMV, UNITY_MATRIX_P, _VecScreenParams, prevScreenCenter2D);
+        if (abs(currentNDC.x) > 1.0 || abs(currentNDC.y) > 1.0)
+        {
+            o.vel = float2(0.0, 0.0);
+        }
+        else
+        { 
+            // Calculate previous position for motion vectors
+            // Project 3D covariance to 2D screen space using previous matrix
+            float2 prevScreenCenter2D;
+            float3 prevCov2d = CalcCovariance2D(splat.pos, cov3d0, cov3d1, _PrevMatrixMV, UNITY_MATRIX_P, _VecScreenParams, prevScreenCenter2D);
 
-        // Decompose previous 2D covariance into screen-space axes
-        float2 prevAxis1, prevAxis2;
-        DecomposeCovariance(prevCov2d, prevAxis1, prevAxis2);
+            // Decompose previous 2D covariance into screen-space axes
+            float2 prevAxis1, prevAxis2;
+            DecomposeCovariance(prevCov2d, prevAxis1, prevAxis2);
 
-        // Calculate previous clip position (assuming same w as current since splats are static)
-        float4 prevCenterClipPos = centerClipPos;
-        prevCenterClipPos.xy = (prevScreenCenter2D * 2/_VecScreenParams.xy - 1) * centerClipPos.w;
+            // Calculate previous clip position (assuming same w as current since splats are static)
+            float4 prevCenterClipPos = centerClipPos;
+            prevCenterClipPos.xy = (prevScreenCenter2D * 2/_VecScreenParams.xy - 1) * centerClipPos.w;
 
-        // Apply same quad offset to get previous vertex position
-        float2 prevDeltaScreenPos = (quadPos.x * prevAxis1 + quadPos.y * prevAxis2) * 2 / _ScreenParams.xy;
-        float4 prevVertex = prevCenterClipPos;
-        prevVertex.xy += prevDeltaScreenPos * centerClipPos.w;
+            // Apply same quad offset to get previous vertex position
+            float2 prevDeltaScreenPos = (quadPos.x * prevAxis1 + quadPos.y * prevAxis2) * 2 / _ScreenParams.xy;
+            float4 prevVertex = prevCenterClipPos;
+            prevVertex.xy += prevDeltaScreenPos * centerClipPos.w;
 
-        // Calculate previous NDC position
-        float2 prevNDC = (prevVertex.xy / prevVertex.w);
-        o.vel = currentNDC - prevNDC;
+            // Calculate previous NDC position
+            float2 prevNDC = (prevVertex.xy / prevVertex.w);
+            o.vel = currentNDC - prevNDC;
+        }
     }
     else
     {

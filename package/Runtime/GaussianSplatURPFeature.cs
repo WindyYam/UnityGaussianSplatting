@@ -111,7 +111,7 @@ namespace GaussianSplatting.Runtime
                     if (usingRT)
                     {
                         commandBuffer.BeginSample(GaussianSplatRenderSystem.s_ProfCompose);
-                        if (settings.m_TemporalFilter == TemporalFilter.Temporal)
+                        if (settings.m_TemporalFilter != TemporalFilter.None)
                         {
                             // use temporal filter to composite; pass the render graph texture handles directly
                             system.GetTemporalFilter().Render(commandBuffer, data.CameraData.camera, matComposite, 1,
