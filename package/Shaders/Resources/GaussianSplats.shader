@@ -30,6 +30,7 @@ float _SplatOpacityScale;
 uint _SHOrder;
 uint _SHOnly;
 float4x4 _MatrixMV;
+float4x4 _PrevMatrixMV;
 float4x4 _MatrixObjectToWorld;
 float4x4 _MatrixWorldToObject;
 float4 _VecScreenParams;
@@ -51,6 +52,7 @@ cbuffer SplatGlobalUniforms // match struct SplatGlobalUniforms in C#
 {
 	uint sgu_transparencyMode;
 	uint sgu_frameOffset;
+	uint sgu_needMotionVectors;
 }
 
 // Helper function to decompose 2D covariance into screen-space axes
@@ -130,13 +132,38 @@ v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
     o.vertex = centerClipPos;
     o.vertex.xy += deltaScreenPos * centerClipPos.w;
 
-    // Motion vectors - calculate from current and previous positions
-    // For now, use simplified motion vector calculation
-    // In a complete implementation, you'd need previous frame data
-    float2 currentNDC = (centerClipPos.xy / centerClipPos.w) * 0.5 + 0.5;
-    float2 prevNDC = currentNDC; // For now, assume no motion (could be enhanced with actual previous frame data)
-    o.vel = currentNDC - prevNDC;
-	
+    // Motion vectors - calculate from current and previous positions only if requested
+    if (sgu_needMotionVectors != 0)
+    {
+        float2 currentNDC = (o.vertex.xy / o.vertex.w);
+
+        // Calculate previous position for motion vectors
+        // Project 3D covariance to 2D screen space using previous matrix
+        float2 prevScreenCenter2D;
+        float3 prevCov2d = CalcCovariance2D(splat.pos, cov3d0, cov3d1, _PrevMatrixMV, UNITY_MATRIX_P, _VecScreenParams, prevScreenCenter2D);
+
+        // Decompose previous 2D covariance into screen-space axes
+        float2 prevAxis1, prevAxis2;
+        DecomposeCovariance(prevCov2d, prevAxis1, prevAxis2);
+
+        // Calculate previous clip position (assuming same w as current since splats are static)
+        float4 prevCenterClipPos = centerClipPos;
+        prevCenterClipPos.xy = (prevScreenCenter2D * 2/_VecScreenParams.xy - 1) * centerClipPos.w;
+
+        // Apply same quad offset to get previous vertex position
+        float2 prevDeltaScreenPos = (quadPos.x * prevAxis1 + quadPos.y * prevAxis2) * 2 / _ScreenParams.xy;
+        float4 prevVertex = prevCenterClipPos;
+        prevVertex.xy += prevDeltaScreenPos * centerClipPos.w;
+
+        // Calculate previous NDC position
+        float2 prevNDC = (prevVertex.xy / prevVertex.w);
+        o.vel = currentNDC - prevNDC;
+    }
+    else
+    {
+        o.vel = float2(0.0, 0.0);
+    }
+
 	FlipProjectionIfBackbuffer(o.vertex);
     return o;
 }

@@ -22,10 +22,9 @@ namespace GaussianSplatting.Runtime
         class GSRenderPass : ScriptableRenderPass
         {
             const string GaussianSplatRTName = "_GaussianSplatRT";
-
+            const string GaussianMotionRTName = "_GaussianSplatMotionRT";
             const string ProfilerTag = "GaussianSplatRenderGraph";
             static readonly ProfilingSampler s_profilingSampler = new(ProfilerTag);
-            static readonly int s_gaussianSplatRT = Shader.PropertyToID(GaussianSplatRTName);
 
             class PassData
             {
@@ -33,6 +32,9 @@ namespace GaussianSplatting.Runtime
                 internal TextureHandle SourceTexture;
                 internal TextureHandle SourceDepth;
                 internal TextureHandle GaussianSplatRT;
+                internal TextureHandle GaussianSplatMotionRT;
+                internal int GaussianSplatWidth;
+                internal int GaussianSplatHeight;
             }
 
             public GSRenderPass()
@@ -59,7 +61,18 @@ namespace GaussianSplatting.Runtime
 
                     var colorHandle = UniversalRenderer.CreateRenderGraphTexture(renderGraph, rtDesc, GaussianSplatRTName, true);
                     passData.GaussianSplatRT = colorHandle;
+                    passData.GaussianSplatWidth = rtDesc.width;
+                    passData.GaussianSplatHeight = rtDesc.height;
                     builder.UseTexture(colorHandle, AccessFlags.Write);
+
+                    // create a motion target (RG16 float) used by temporal filter
+                    var motionDesc = cameraData.cameraTargetDescriptor;
+                    motionDesc.depthBufferBits = 0;
+                    motionDesc.msaaSamples = 1;
+                    motionDesc.graphicsFormat = GraphicsFormat.R16G16_SFloat;
+                    var motionHandle = UniversalRenderer.CreateRenderGraphTexture(renderGraph, motionDesc, GaussianMotionRTName, true);
+                    passData.GaussianSplatMotionRT = motionHandle;
+                    builder.UseTexture(motionHandle, AccessFlags.Write);
                 }
                 passData.SourceTexture = resourceData.activeColorTexture;
                 passData.SourceDepth = resourceData.activeDepthTexture;
@@ -83,8 +96,11 @@ namespace GaussianSplatting.Runtime
 
                     if (usingRT)
                     {
-                        commandBuffer.SetGlobalTexture(s_gaussianSplatRT, data.GaussianSplatRT);
-                        CoreUtils.SetRenderTarget(commandBuffer, data.GaussianSplatRT, data.SourceDepth, ClearFlag.Color, Color.clear);
+                        // bind both color and motion targets as global textures
+                        commandBuffer.SetGlobalTexture(GaussianSplatRenderer.Props.GaussianSplatRT, data.GaussianSplatRT);
+                        commandBuffer.SetGlobalTexture(GaussianSplatRenderer.Props.GaussianSplatMotionRT, data.GaussianSplatMotionRT);
+                        // render to both color and motion RTs
+                        CoreUtils.SetRenderTarget(commandBuffer, new RenderTargetIdentifier[] { data.GaussianSplatRT, data.GaussianSplatMotionRT }, data.SourceDepth, ClearFlag.None);
                     }
                     else
                     {
@@ -95,8 +111,20 @@ namespace GaussianSplatting.Runtime
                     if (usingRT)
                     {
                         commandBuffer.BeginSample(GaussianSplatRenderSystem.s_ProfCompose);
-                        Blitter.BlitCameraTexture(commandBuffer, data.GaussianSplatRT, data.SourceTexture, matComposite, 0);
-                        commandBuffer.EndSample(GaussianSplatRenderSystem.s_ProfCompose);
+                        if (settings.m_TemporalFilter == TemporalFilter.Temporal)
+                        {
+                            // use temporal filter to composite; pass the render graph texture handles directly
+                            system.GetTemporalFilter().Render(commandBuffer, data.CameraData.camera, matComposite, 1,
+                                data.GaussianSplatRT, data.SourceTexture,
+                                data.GaussianSplatWidth, data.GaussianSplatHeight,
+                                settings.m_FrameInfluence, settings.m_VarianceClampScale,
+                                data.GaussianSplatMotionRT);
+                        }
+                        else
+                        {
+                            Blitter.BlitCameraTexture(commandBuffer, data.GaussianSplatRT, data.SourceTexture, matComposite, 0);
+                        }
+                         commandBuffer.EndSample(GaussianSplatRenderSystem.s_ProfCompose);
                     }
                 });
             }

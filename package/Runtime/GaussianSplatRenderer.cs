@@ -41,10 +41,19 @@ namespace GaussianSplatting.Runtime
         uint m_FrameOffset;
         GaussianSplatTemporalFilter m_TemporalFilter;
 
+        // Public accessor to get or create the temporal filter instance.
+        // Other renderer features (URP/HDRP) should call this to obtain the filter
+        // instead of accessing internal fields directly.
+        public GaussianSplatTemporalFilter GetTemporalFilter()
+        {
+            return m_TemporalFilter ??= new GaussianSplatTemporalFilter();
+        }
+
         struct SplatGlobalUniforms // match cbuffer SplatGlobalUniforms in shaders
         {
             public uint transparencyMode;
             public uint frameOffset;
+            public uint needMotionVectors;
         }
 
         public void RegisterSplat(GaussianSplatRenderer r)
@@ -187,7 +196,7 @@ namespace GaussianSplatting.Runtime
 
             m_GlobalUniforms ??= new GraphicsBuffer(GraphicsBuffer.Target.Constant, 1, UnsafeUtility.SizeOf<SplatGlobalUniforms>());
             NativeArray<SplatGlobalUniforms> sgu = new(1, Allocator.Temp);
-            sgu[0] = new SplatGlobalUniforms { transparencyMode = (uint)settings.m_Transparency, frameOffset = m_FrameOffset};
+            sgu[0] = new SplatGlobalUniforms { transparencyMode = (uint)settings.m_Transparency, frameOffset = m_FrameOffset, needMotionVectors = (uint)(settings.m_TemporalFilter != TemporalFilter.None ? 1u : 0u)};
             cmb.SetBufferData(m_GlobalUniforms, sgu);
             m_FrameOffset++;
 
@@ -207,16 +216,17 @@ namespace GaussianSplatting.Runtime
                 // No need to clear and reset immutable buffers - they were set during registration
                 // Only set per-frame varying properties
 
-                // Always use vertex shader mode - pass matrices for vertex shader calculation
                 Matrix4x4 matView = cam.worldToCameraMatrix;
                 Matrix4x4 matO2W = matrix;
                 Matrix4x4 matW2O = matrix.inverse;
+                Matrix4x4 currentMatMV = matView * matO2W;
                 int screenW = cam.pixelWidth, screenH = cam.pixelHeight;
                 int eyeW = XRSettings.eyeTextureWidth, eyeH = XRSettings.eyeTextureHeight;
                 Vector4 screenPar = new Vector4(eyeW != 0 ? eyeW : screenW, eyeH != 0 ? eyeH : screenH, 0, 0);
                 Vector4 camPos = cam.transform.position;
                 
-                mpb.SetMatrix(GaussianSplatRenderer.Props.MatrixMV, matView * matO2W);
+                mpb.SetMatrix(GaussianSplatRenderer.Props.MatrixMV, currentMatMV);
+                mpb.SetMatrix(GaussianSplatRenderer.Props.PrevMatrixMV, gs.m_PrevMatrixMV);
                 mpb.SetMatrix(GaussianSplatRenderer.Props.MatrixObjectToWorld, matO2W);
                 mpb.SetMatrix(GaussianSplatRenderer.Props.MatrixWorldToObject, matW2O);
                 mpb.SetVector(GaussianSplatRenderer.Props.VecScreenParams, screenPar);
@@ -242,6 +252,9 @@ namespace GaussianSplatting.Runtime
                 cmb.BeginSample(s_ProfDraw);
                 cmb.DrawProcedural(m_CubeIndexBuffer, matrix, displayMat, 0, topology, indexCount, instanceCount, mpb);
                 cmb.EndSample(s_ProfDraw);
+                
+                // Store current matrix as previous for next frame
+                gs.m_PrevMatrixMV = currentMatMV;
             }
         }
 
@@ -347,6 +360,7 @@ namespace GaussianSplatting.Runtime
                     m_TemporalFilter ??= new GaussianSplatTemporalFilter();
                     m_TemporalFilter.Render(m_CommandBuffer, cam, matComposite, 1,
                         GaussianSplatRenderer.Props.GaussianSplatRT, BuiltinRenderTextureType.CameraTarget,
+                        cam.pixelWidth, cam.pixelHeight,
                         settings.m_FrameInfluence, settings.m_VarianceClampScale,
                         GaussianSplatRenderer.Props.GaussianSplatMotionRT);
                 }
@@ -387,6 +401,7 @@ namespace GaussianSplatting.Runtime
         internal int m_FrameCounter;
         GaussianSplatAsset m_PrevAsset;
         Hash128 m_PrevHash;
+        internal Matrix4x4 m_PrevMatrixMV = Matrix4x4.identity;
         bool m_Registered;
 
         internal static class Props
@@ -403,7 +418,6 @@ namespace GaussianSplatting.Runtime
             public static readonly int SplatChunks = Shader.PropertyToID("_SplatChunks");
             public static readonly int SplatChunkCount = Shader.PropertyToID("_SplatChunkCount");
             public static readonly int SplatViewData = Shader.PropertyToID("_SplatViewData");
-            public static readonly int PrevSplatViewData = Shader.PropertyToID("_PrevSplatViewData");
             public static readonly int SplatScale = Shader.PropertyToID("_SplatScale");
             public static readonly int SplatOpacityScale = Shader.PropertyToID("_SplatOpacityScale");
             public static readonly int SplatSize = Shader.PropertyToID("_SplatSize");
@@ -416,6 +430,7 @@ namespace GaussianSplatting.Runtime
             public static readonly int GaussianSplatMotionRT = Shader.PropertyToID("_GaussianSplatMotionRT");
             public static readonly int SplatSortKeys = Shader.PropertyToID("_SplatSortKeys");
             public static readonly int MatrixMV = Shader.PropertyToID("_MatrixMV");
+            public static readonly int PrevMatrixMV = Shader.PropertyToID("_PrevMatrixMV");
             public static readonly int MatrixObjectToWorld = Shader.PropertyToID("_MatrixObjectToWorld");
             public static readonly int MatrixWorldToObject = Shader.PropertyToID("_MatrixWorldToObject");
             public static readonly int VecScreenParams = Shader.PropertyToID("_VecScreenParams");

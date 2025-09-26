@@ -37,14 +37,14 @@ namespace GaussianSplatting.Runtime
             int passIndex,
             RenderTargetIdentifier srcSplatColor,
             RenderTargetIdentifier dstComposedColor,
+            int srcWidth,
+            int srcHeight,
             float frameInfluence,
             float varianceClampScale,
             RenderTargetIdentifier motionVectorTex)
         {
-            int screenW = camera.pixelWidth, screenH = camera.pixelHeight;
-            int eyeW = XRSettings.eyeTextureWidth, eyeH = XRSettings.eyeTextureHeight;
-            int width = eyeW != 0 ? eyeW : screenW;
-            int height = eyeH != 0 ? eyeH : screenH;
+            int width = srcWidth;
+            int height = srcHeight;
 
             float taaFrameInfluence = frameInfluence;
 
