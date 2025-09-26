@@ -87,9 +87,13 @@ v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
     float3 centerWorldPos = mul(_MatrixObjectToWorld, float4(splat.pos, 1)).xyz;
     float4 centerClipPos = mul(UNITY_MATRIX_VP, float4(centerWorldPos, 1));
     
-    // Check if behind camera
+    // Check if behind camera, outside frustum, or outside near/far clip planes
     bool behindCam = centerClipPos.w <= 0;
-    if (behindCam)
+    float2 ndc = centerClipPos.xy / centerClipPos.w;
+    float ndcZ = centerClipPos.z / centerClipPos.w;
+    bool outsideFrustum = abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0;
+    bool outsideClipPlanes = ndcZ < 0.0 || ndcZ > 1.0;
+    if (behindCam || outsideFrustum || outsideClipPlanes)
     {
         o.vertex = asfloat(0x7fc00000); // NaN discards the primitive
         return o;
@@ -156,6 +160,7 @@ v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
             float2 prevCenterNDC = prevCenterClipPos.xy / prevCenterClipPos.w;
             // Motion vector is center NDC difference (approximation, avoids per-vertex offsets)
             o.vel = currentCenterNDC - prevCenterNDC;
+            FlipMotionIfBackbuffer(o.vel);
         }
     }
     else if (sgu_needMotionVectors == 2)
@@ -190,6 +195,7 @@ v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
             // Calculate previous NDC position
             float2 prevNDC = (prevVertex.xy / prevVertex.w);
             o.vel = currentNDC - prevNDC;
+            FlipMotionIfBackbuffer(o.vel);
         }
     }
     else
