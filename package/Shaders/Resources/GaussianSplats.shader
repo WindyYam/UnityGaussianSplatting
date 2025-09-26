@@ -53,6 +53,7 @@ cbuffer SplatGlobalUniforms // match struct SplatGlobalUniforms in C#
 	uint sgu_transparencyMode;
 	uint sgu_frameOffset;
 	uint sgu_needMotionVectors;
+	uint sgu_padding0; // padding to align cbuffer to 16 bytes
 }
 
 // Helper function to decompose 2D covariance into screen-space axes

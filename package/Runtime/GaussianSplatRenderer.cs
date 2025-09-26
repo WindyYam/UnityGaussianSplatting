@@ -54,6 +54,7 @@ namespace GaussianSplatting.Runtime
             public uint transparencyMode;
             public uint frameOffset;
             public uint needMotionVectors;
+            public uint padding0; // padding to make struct 16 bytes to match GPU cbuffer layout
         }
 
         public void RegisterSplat(GaussianSplatRenderer r)
