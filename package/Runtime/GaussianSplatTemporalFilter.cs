@@ -60,7 +60,9 @@ namespace GaussianSplatting.Runtime
                 desc.height = m_CurHeight;
                 desc.msaaSamples = 1;
                 desc.volumeDepth = 1;
-                desc.graphicsFormat = GraphicsFormat.R8G8B8A8_UNorm;
+                // Use higher precision (half float) for weighted intermediate accumulation
+                // to avoid precision loss when blending successive frames.
+                desc.graphicsFormat = GraphicsFormat.R16G16B16A16_SFloat;
                 desc.dimension = TextureDimension.Tex2D;
                 m_AccumulationTexture = new RenderTexture(desc);
                 m_TempTexture = new RenderTexture(desc);
@@ -79,7 +81,9 @@ namespace GaussianSplatting.Runtime
             cmb.CopyTexture(m_TempTexture, m_AccumulationTexture);
 
             // composite temp buffer into output
-            cmb.CopyTexture(m_TempTexture, srcSplatColor);
+            // Use Blit here to allow proper format conversion if the destination
+            // render target has a different format than our float accumulation texture.
+            cmb.Blit(m_TempTexture, srcSplatColor);
             cmb.SetRenderTarget(dstComposedColor);
             cmb.DrawProcedural(Matrix4x4.identity, material, 0, MeshTopology.Triangles, 3, 1);
         }
