@@ -248,6 +248,24 @@ namespace GaussianSplatting.Runtime
 
                 int indexCount = 6;
                 int instanceCount = gs.splatCount;
+
+                // Perform octree culling if enabled
+                if (settings.m_EnableOctreeCulling)
+                {
+                    int visibleCount = gs.PerformOctreeCulling(cam);
+                    if (visibleCount > 0)
+                    {
+                        instanceCount = visibleCount;
+                        // Update material property block with culling results
+                        gs.SetAssetDataOnMaterial(mpb);
+                    }
+                    else
+                    {
+                        // Skip rendering if no splats are visible
+                        continue;
+                    }
+                }
+
                 MeshTopology topology = MeshTopology.Triangles;
                 if (settings.m_RenderMode is DebugRenderMode.DebugBoxes or DebugRenderMode.DebugChunkBounds)
                     indexCount = 36;
@@ -409,6 +427,11 @@ namespace GaussianSplatting.Runtime
         internal Matrix4x4 m_PrevMatrixMV = Matrix4x4.identity;
         bool m_Registered;
 
+        // Octree culling system
+        internal GaussianSplatOctree m_Octree;
+        int m_LastCullingFrame = -1;
+        internal bool m_OctreeBuilt;
+
         internal static class Props
         {
             public static readonly int SrcBlend = Shader.PropertyToID("_SrcBlend");
@@ -442,12 +465,18 @@ namespace GaussianSplatting.Runtime
             public static readonly int VecScreenParams = Shader.PropertyToID("_VecScreenParams");
             public static readonly int VecWorldSpaceCameraPos = Shader.PropertyToID("_VecWorldSpaceCameraPos");
             public static readonly int CameraTargetTexture = Shader.PropertyToID("_CameraTargetTexture");
+            public static readonly int SplatIndexMap = Shader.PropertyToID("_SplatIndexMap");
+            public static readonly int UseIndexMapping = Shader.PropertyToID("_UseIndexMapping");
         }
 
 
 
         public GaussianSplatAsset asset => m_Asset;
         public int splatCount => m_SplatCount;
+        
+        // Octree culling properties for editor access
+        public bool octreeBuilt => m_OctreeBuilt;
+        public GaussianSplatOctree octree => m_Octree;
 
         enum KernelIndices
         {
@@ -499,7 +528,9 @@ namespace GaussianSplatting.Runtime
                     UnsafeUtility.SizeOf<GaussianSplatAsset.ChunkInfo>()) {name = "GaussianChunkData"};
                 m_GpuChunksValid = false;
             }
-            
+
+            // Build octree for culling if enabled
+            BuildOctreeForCulling();
         }
 
         bool resourcesAreSetUp => GaussianSplatSettings.instance.resourcesFound;
@@ -541,6 +572,16 @@ namespace GaussianSplatting.Runtime
             mat.SetInteger(Props.SplatFormat, (int)format);
             mat.SetInteger(Props.SplatCount, m_SplatCount);
             mat.SetInteger(Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
+
+            // Set octree culling properties
+            var settings = GaussianSplatSettings.instance;
+            bool useOctreeCulling = settings.m_EnableOctreeCulling && m_OctreeBuilt && m_Octree != null;
+            mat.SetInteger(Props.UseIndexMapping, useOctreeCulling ? 1 : 0);
+            
+            if (useOctreeCulling && m_Octree.visibleIndicesBuffer != null)
+            {
+                mat.SetBuffer(Props.SplatIndexMap, m_Octree.visibleIndicesBuffer);
+            }
         }
 
         static void DisposeBuffer(ref GraphicsBuffer buf)
@@ -557,6 +598,12 @@ namespace GaussianSplatting.Runtime
             DisposeBuffer(ref m_GpuOtherData);
             DisposeBuffer(ref m_GpuSHData);
             DisposeBuffer(ref m_GpuChunks);
+
+            // Dispose octree
+            m_Octree?.Dispose();
+            m_Octree = null;
+            m_OctreeBuilt = false;
+            m_LastCullingFrame = -1;
 
             m_SplatCount = 0;
             m_GpuChunksValid = false;
@@ -597,7 +644,18 @@ namespace GaussianSplatting.Runtime
                 GaussianSplatRenderSystem.instance.UpdateSplatAssetData(this);
             }
         }
+// Draw octree leaf bounds in the Scene view for debugging. Call is automatic via OnDrawGizmos.
+        public void OnDrawGizmos()
+        {
+            if (!m_OctreeBuilt || m_Octree == null)
+                return;
 
+            // Choose color based on debug mode if available
+            var settings = GaussianSplatSettings.instance;
+            Color col = (settings != null && settings.isDebugRender) ? Color.cyan : Color.yellow;
+
+            m_Octree.DrawLeafBoundsGizmos(col);
+        }
         public void ActivateCamera(int index)
         {
             Camera mainCam = Camera.main;
@@ -620,11 +678,275 @@ namespace GaussianSplatting.Runtime
 #endif
         }
 
+        public int PerformOctreeCulling(Camera camera)
+        {
+            if (!m_OctreeBuilt || m_Octree == null)
+                return m_SplatCount; // No culling, render all splats
+            
+            var settings = GaussianSplatSettings.instance;
+            if (!settings.m_EnableOctreeCulling)
+                return m_SplatCount;
+                
+            // Check if we need to update culling (every N frames)
+            int currentFrame = Time.frameCount;
+            if (m_LastCullingFrame >= 0 && (currentFrame - m_LastCullingFrame) < settings.m_OctreeCullingUpdateInterval)
+            {
+                return m_Octree.visibleSplatCount; // Use cached result
+            }
+            
+            m_LastCullingFrame = currentFrame;
+            return m_Octree.CullFrustum(camera);
+        }
 
+        void BuildOctreeForCulling()
+        {
+            var settings = GaussianSplatSettings.instance;
+            if (!settings.m_EnableOctreeCulling)
+            {
+                m_OctreeBuilt = false;
+                return;
+            }
 
+            try
+            {
+                Debug.Log($"Building octree for {name}: SplatCount={m_SplatCount}, Format={asset.posFormat}");
+                
+                // Extract splat positions from asset data
+                var splatPositions = ExtractSplatPositions();
+                if (splatPositions.Length == 0)
+                {
+                    Debug.LogWarning($"No splat positions extracted for {name}");
+                    m_OctreeBuilt = false;
+                    return;
+                }
 
+                // Calculate scene bounds (apply object transform to account for scale/rotation/translation)
+                NativeArray<float3> worldSplatPositions = new NativeArray<float3>(splatPositions.Length, Allocator.Temp);
+                try
+                {
+                    var tr = transform;
+                    for (int i = 0; i < splatPositions.Length; i++)
+                    {
+                        var p = splatPositions[i];
+                        var wp = tr.TransformPoint(new Vector3(p.x, p.y, p.z));
+                        worldSplatPositions[i] = new float3(wp.x, wp.y, wp.z);
+                    }
 
+                    var bounds = CalculateSplatBounds(worldSplatPositions);
+                    Debug.Log($"Scene bounds for {name} (world-space): {bounds}");
 
+                    // Initialize and build octree using world-space positions
+                    m_Octree ??= new GaussianSplatOctree();
+                    m_Octree.Initialize(settings.m_OctreeMaxDepth, settings.m_OctreeMaxSplatsPerLeaf);
+                    m_Octree.Build(worldSplatPositions, bounds);
+                }
+                finally
+                {
+                    splatPositions.Dispose();
+                    worldSplatPositions.Dispose();
+                }
 
+                m_OctreeBuilt = true;
+
+                // Log debug info
+                m_Octree.GetDebugInfo(out int leafNodes, out int maxDepth, out int maxSplatsInLeaf);
+                Debug.Log($"Gaussian Splat Octree built for {name}: {leafNodes} leaf nodes, max depth {maxDepth}, max splats per leaf {maxSplatsInLeaf}");
+                
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"Failed to build octree for {name}: {e.Message}\nStack trace: {e.StackTrace}");
+                m_OctreeBuilt = false;
+            }
+        }
+
+        NativeArray<float3> ExtractSplatPositions()
+        {
+            if (!HasValidAsset)
+                return new NativeArray<float3>();
+
+            // Add validation
+            if (m_SplatCount <= 0)
+            {
+                Debug.LogError($"Invalid splat count: {m_SplatCount}");
+                return new NativeArray<float3>();
+            }
+
+            var positions = new NativeArray<float3>(m_SplatCount, Allocator.Temp);
+            var posData = asset.posData.GetData<uint>();
+            var chunkData = asset.chunkData?.GetData<GaussianSplatAsset.ChunkInfo>();
+            
+            int vectorSize = GaussianSplatAsset.GetVectorSize(asset.posFormat);
+            
+            // Calculate expected data size and validate
+            long expectedDataSize = (long)m_SplatCount * vectorSize;
+            long actualDataSize = posData.Length * 4; // posData is uint[], so 4 bytes per element
+            
+            if (expectedDataSize > actualDataSize)
+            {
+                Debug.LogError($"Position data size mismatch: expected {expectedDataSize} bytes, got {actualDataSize} bytes. " +
+                             $"SplatCount={m_SplatCount}, VectorSize={vectorSize}, Format={asset.posFormat}");
+                positions.Dispose();
+                return new NativeArray<float3>();
+            }
+            
+            Debug.Log($"Extracting {m_SplatCount} splat positions. Format: {asset.posFormat}, VectorSize: {vectorSize}, " +
+                     $"PosData length: {posData.Length} uints ({posData.Length * 4} bytes)");
+            
+            for (int i = 0; i < m_SplatCount; i++)
+            {
+                positions[i] = DecodeSplatPosition(posData, chunkData, i, asset.posFormat, vectorSize);
+            }
+            
+            return positions;
+        }
+
+        float3 DecodeSplatPosition(NativeArray<uint> posData, NativeArray<GaussianSplatAsset.ChunkInfo>? chunkData, int splatIndex, GaussianSplatAsset.VectorFormat format, int vectorSize)
+        {
+            // Calculate byte address for this splat's position data
+            int byteAddr = splatIndex * vectorSize;
+            int uintAddr = byteAddr / 4;
+            
+            // Check bounds to prevent out-of-range errors
+            if (uintAddr >= posData.Length)
+            {
+                Debug.LogError($"Position data out of bounds: uintAddr={uintAddr}, posData.Length={posData.Length}, splatIndex={splatIndex}, vectorSize={vectorSize}");
+                return float3.zero;
+            }
+            
+            float3 position = float3.zero;
+            
+            switch (format)
+            {
+                case GaussianSplatAsset.VectorFormat.Float32:
+                    // 3 consecutive float32 values - need to check we have enough data
+                    if (uintAddr + 2 >= posData.Length)
+                    {
+                        Debug.LogError($"Float32 position data out of bounds: need {uintAddr + 2}, have {posData.Length}");
+                        return float3.zero;
+                    }
+                    position.x = math.asfloat(posData[uintAddr]);
+                    position.y = math.asfloat(posData[uintAddr + 1]);
+                    position.z = math.asfloat(posData[uintAddr + 2]);
+                    break;
+                    
+                case GaussianSplatAsset.VectorFormat.Norm16:
+                    // Packed 16.16.16 format (6 bytes total, needs special handling)
+                    if (uintAddr + 1 >= posData.Length)
+                    {
+                        Debug.LogError($"Norm16 position data out of bounds: need {uintAddr + 1}, have {posData.Length}");
+                        return float3.zero;
+                    }
+                    {
+                        uint val0 = posData[uintAddr];
+                        uint val1 = posData[uintAddr + 1];
+                        // Handle unaligned access
+                        if ((byteAddr & 3) != 0)
+                        {
+                            val0 = (val0 >> 16) | ((val1 & 0xFFFF) << 16);
+                            val1 >>= 16;
+                        }
+                        position.x = (val0 & 0xFFFF) / 65535.0f;
+                        position.y = ((val0 >> 16) & 0xFFFF) / 65535.0f;
+                        position.z = (val1 & 0xFFFF) / 65535.0f;
+                    }
+                    break;
+                    
+                case GaussianSplatAsset.VectorFormat.Norm11:
+                    // Packed 11.10.11 format (32 bits total)
+                    {
+                        uint val = posData[uintAddr];
+                        if ((byteAddr & 3) != 0)
+                        {
+                            if (uintAddr + 1 >= posData.Length)
+                            {
+                                Debug.LogError($"Norm11 position data out of bounds for unaligned access: need {uintAddr + 1}, have {posData.Length}");
+                                return float3.zero;
+                            }
+                            uint val1 = posData[uintAddr + 1];
+                            val = (val >> 16) | ((val1 & 0xFFFF) << 16);
+                        }
+                        position.x = (val & 2047) / 2047.0f;
+                        position.y = ((val >> 11) & 1023) / 1023.0f;
+                        position.z = ((val >> 21) & 2047) / 2047.0f;
+                    }
+                    break;
+                    
+                case GaussianSplatAsset.VectorFormat.Norm6:
+                    // Packed 6.5.5 format (16 bits total)
+                    {
+
+                        uint val = LoadUShortFromByteAddr(posData, byteAddr);
+                        position.x = (val & 63) / 63.0f;
+                        position.y = ((val >> 6) & 31) / 31.0f;
+                        position.z = ((val >> 11) & 31) / 31.0f;
+                    }
+                    break;
+            }
+            
+            // Apply chunk-relative positioning if chunk data exists
+            if (chunkData.HasValue && chunkData.Value.IsCreated && chunkData.Value.Length > 0)
+            {
+                int chunkIndex = splatIndex / GaussianSplatAsset.kChunkSize;
+                if (chunkIndex < chunkData.Value.Length)
+                {
+                    var chunk = chunkData.Value[chunkIndex];
+                    // Convert chunk bounds to world space
+                    position.x = math.lerp(chunk.posX.x, chunk.posX.y, position.x);
+                    position.y = math.lerp(chunk.posY.x, chunk.posY.y, position.y);
+                    position.z = math.lerp(chunk.posZ.x, chunk.posZ.y, position.z);
+                }
+            }
+            else
+            {
+                // Use asset bounds
+                var boundsMin = asset.boundsMin;
+                var boundsMax = asset.boundsMax;
+                position.x = math.lerp(boundsMin.x, boundsMax.x, position.x);
+                position.y = math.lerp(boundsMin.y, boundsMax.y, position.y);
+                position.z = math.lerp(boundsMin.z, boundsMax.z, position.z);
+            }
+            
+            return position;
+        }
+
+        uint LoadUShortFromByteAddr(NativeArray<uint> data, int byteAddr)
+        {
+            int alignedAddr = byteAddr & ~0x3;
+            int uintIndex = alignedAddr / 4;
+            
+            if (uintIndex >= data.Length)
+            {
+                Debug.LogError($"LoadUShortFromByteAddr out of bounds: uintIndex={uintIndex}, data.Length={data.Length}, byteAddr={byteAddr}");
+                return 0;
+            }
+            
+            uint val = data[uintIndex];
+            if (byteAddr != alignedAddr)
+                val >>= 16;
+            return val & 0xFFFF;
+        }
+
+        Bounds CalculateSplatBounds(NativeArray<float3> positions)
+        {
+            if (positions.Length == 0)
+                return new Bounds();
+                
+            float3 min = positions[0];
+            float3 max = positions[0];
+            
+            for (int i = 1; i < positions.Length; i++)
+            {
+                min = math.min(min, positions[i]);
+                max = math.max(max, positions[i]);
+            }
+            
+            // Add some padding to avoid edge cases
+            float3 padding = (max - min) * 0.01f;
+            min -= padding;
+            max += padding;
+            
+            return new Bounds((max + min) * 0.5f, max - min);
+        }
     }
 }

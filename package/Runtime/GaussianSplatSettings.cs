@@ -66,9 +66,19 @@ namespace GaussianSplatting.Runtime
         [Range(0.001f, 10.0f)] public float m_VarianceClampScale = 1.5f;
 
         public DebugRenderMode m_RenderMode = DebugRenderMode.Splats;
-        [Range(1.0f,15.0f)] public float m_PointDisplaySize = 3.0f;
+        [Range(1.0f,50.0f)] public float m_PointDisplaySize = 3.0f;
         [Tooltip("Show only Spherical Harmonics contribution, using gray color")]
         public bool m_SHOnly;
+
+        [Header("Octree Culling")]
+        [Tooltip("Enable octree-based frustum culling for improved performance")]
+        public bool m_EnableOctreeCulling = true;
+        [Tooltip("Maximum octree depth (4-6 recommended)")]
+        [Range(1, 8)] public int m_OctreeMaxDepth = 5;
+        [Tooltip("Maximum splats per octree leaf node (64-256 recommended)")]
+        [Range(32, 512)] public int m_OctreeMaxSplatsPerLeaf = 128;
+        [Tooltip("Update culling every N frames (1 = every frame, higher = better performance but less precise)")]
+        [Range(1, 10)] public int m_OctreeCullingUpdateInterval = 1;
 
         // Remove the vertex shader mode option since it's now the only mode
         // [Tooltip("Use vertex shader mode for better WebGL compatibility (disables compute shaders and temporal filtering)")]

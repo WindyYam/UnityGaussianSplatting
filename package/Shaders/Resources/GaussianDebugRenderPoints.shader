@@ -29,10 +29,18 @@ float _SplatSize;
 bool _DisplayIndex;
 int _SplatCount;
 
+StructuredBuffer<uint> _SplatIndexMap; // optional mapping
+uint _UseIndexMapping; // 1 when using octree culling, 0 otherwise
+
 v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
 {
     v2f o;
+
     uint splatIndex = instID;
+    if (_UseIndexMapping)
+    {
+        splatIndex = _SplatIndexMap[instID];
+    } 
 
     SplatData splat = LoadSplatData(splatIndex);
 

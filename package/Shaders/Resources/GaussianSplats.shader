@@ -29,6 +29,7 @@ float _SplatScale;
 float _SplatOpacityScale;
 uint _SHOrder;
 uint _SHOnly;
+uint _UseIndexMapping; // 1 when using octree culling, 0 otherwise
 float4x4 _MatrixMV;
 float4x4 _PrevMatrixMV;
 float4x4 _PrevMatrixV;
@@ -57,6 +58,8 @@ cbuffer SplatGlobalUniforms // match struct SplatGlobalUniforms in C#
 	uint sgu_padding0; // padding to align cbuffer to 16 bytes
 }
 
+StructuredBuffer<uint> _SplatIndexMap; // optional mapping
+
 // Helper function to decompose 2D covariance into screen-space axes
 void DecomposeCovariance(float3 cov2d, out float2 v1, out float2 v2)
 {
@@ -76,12 +79,12 @@ void DecomposeCovariance(float3 cov2d, out float2 v1, out float2 v2)
 v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
 {
     v2f o = (v2f)0;
-    
-    // Handle sorted vs unsorted rendering (always stochastic now)
-	o.idx = instID + sgu_frameOffset;
-	
-    // Always use vertex shader mode - calculate everything here
-    SplatData splat = LoadSplatData(instID);
+    uint realIdx = instID;
+    if (_UseIndexMapping)
+        realIdx = _SplatIndexMap[instID];
+
+    o.idx = realIdx + sgu_frameOffset;
+    SplatData splat = LoadSplatData(realIdx);
     
     // Transform to world space
     float3 centerWorldPos = mul(_MatrixObjectToWorld, float4(splat.pos, 1)).xyz;
