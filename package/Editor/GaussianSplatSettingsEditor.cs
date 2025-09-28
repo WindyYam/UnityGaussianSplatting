@@ -23,6 +23,7 @@ namespace GaussianSplatting.Editor
         SerializedProperty m_OctreeMaxDepth;
         SerializedProperty m_OctreeMaxSplatsPerLeaf;
         SerializedProperty m_OctreeCullingUpdateInterval;
+        SerializedProperty m_OctreeSplatRatio;
 
         public void OnEnable()
         {
@@ -39,6 +40,7 @@ namespace GaussianSplatting.Editor
             m_OctreeMaxDepth = serializedObject.FindProperty("m_OctreeMaxDepth");
             m_OctreeMaxSplatsPerLeaf = serializedObject.FindProperty("m_OctreeMaxSplatsPerLeaf");
             m_OctreeCullingUpdateInterval = serializedObject.FindProperty("m_OctreeCullingUpdateInterval");
+            m_OctreeSplatRatio = serializedObject.FindProperty("m_OctreeSplatRatio");
         }
 
         public override void OnInspectorGUI()
@@ -70,6 +72,7 @@ namespace GaussianSplatting.Editor
                 EditorGUILayout.PropertyField(m_OctreeMaxDepth);
                 EditorGUILayout.PropertyField(m_OctreeMaxSplatsPerLeaf);
                 EditorGUILayout.PropertyField(m_OctreeCullingUpdateInterval);
+                EditorGUILayout.PropertyField(m_OctreeSplatRatio);
                 
                 // Display octree statistics
                 if (Application.isPlaying)

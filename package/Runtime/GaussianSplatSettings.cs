@@ -80,6 +80,9 @@ namespace GaussianSplatting.Runtime
         [Tooltip("Update culling every N frames (1 = every frame, higher = better performance but less precise)")]
         [Range(1, 10)] public int m_OctreeCullingUpdateInterval = 1;
 
+        [Tooltip("Ratio (0-1) of splats considered as 'screen' splats when building the octree. The remainder are treated as background splats.")]
+        [Range(0.0f, 1.0f)] public float m_OctreeSplatRatio = 0.9f;
+
         // Remove the vertex shader mode option since it's now the only mode
         // [Tooltip("Use vertex shader mode for better WebGL compatibility (disables compute shaders and temporal filtering)")]
         // public bool m_UseVertexShaderMode;

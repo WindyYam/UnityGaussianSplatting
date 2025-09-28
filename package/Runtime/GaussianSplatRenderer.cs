@@ -738,7 +738,7 @@ namespace GaussianSplatting.Runtime
                     // Initialize and build octree using world-space positions
                     m_Octree ??= new GaussianSplatOctree();
                     m_Octree.Initialize(settings.m_OctreeMaxDepth, settings.m_OctreeMaxSplatsPerLeaf);
-                    m_Octree.Build(worldSplatPositions, bounds);
+                    m_Octree.Build(worldSplatPositions, bounds, settings.m_OctreeSplatRatio);
                 }
                 finally
                 {

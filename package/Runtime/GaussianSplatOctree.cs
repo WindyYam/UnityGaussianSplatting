@@ -68,7 +68,7 @@ namespace GaussianSplatting.Runtime
         /// <summary>
         /// Build octree from splat position data and bounds.
         /// </summary>
-        public void Build(NativeArray<float3> splatPositions, Bounds sceneBounds)
+        public void Build(NativeArray<float3> splatPositions, Bounds sceneBounds, float splatPercent)
         {
             Clear();
             // m_OthersNodeIndex removed - use m_OthersIndices list instead
@@ -97,8 +97,8 @@ namespace GaussianSplatting.Runtime
             }
             distList.Sort((a, b) => a.d.CompareTo(b.d));
 
-            // Reorder m_SplatInfos so that the closest 95% are first, others last
-            int inCount = Mathf.CeilToInt(total * 0.99f);
+            // Reorder m_SplatInfos so that the closest part are first, others last
+            int inCount = Mathf.CeilToInt(total * splatPercent);
             inCount = Mathf.Clamp(inCount, 1, total);
             int othersCount = total - inCount;
             
