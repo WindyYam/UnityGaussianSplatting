@@ -23,9 +23,6 @@ namespace GaussianSplatting.Runtime
             // Child node indices (indices into m_Nodes). Null or empty for leaf nodes.
             public List<int> childIndices;
             public bool isLeaf;
-            // Flattened leaf data (filled after build/flatten). For non-leaf nodes baseOffset/count are -1/0.
-            public int baseOffset = -1; // offset into flattened leaf splat indices buffer
-            public int count = 0;       // number of splats in this leaf
         }
 
         public struct SplatInfo
@@ -36,29 +33,16 @@ namespace GaussianSplatting.Runtime
 
         readonly List<OctreeNode> m_Nodes = new();
         readonly List<SplatInfo> m_SplatInfos = new();
-        // Legacy per-frame visible splat list (kept for fallback/debug)
-        readonly List<int> m_VisibleSplatIndices = new();
-        
-        // Leaf indirection optimization data ----------------------------------
-        readonly List<int> m_FlatLeafSplatIndices = new(); // concatenated splat indices of all leaves (including outliers leaf)
-        GraphicsBuffer m_LeafSplatIndicesBuffer;            // Structured uint buffer of flattened indices
-        GraphicsBuffer m_LeafMetaBuffer;                    // Structured uint2 buffer: (baseOffset, count) per node (only leaf nodes meaningful)
-        readonly List<int> m_VisibleLeafNodeIndices = new(); // per-frame list of visible leaf node indices
-        readonly List<int> m_VisibleLeafPrefix = new();       // prefix sums (start instance for each visible leaf)
-        GraphicsBuffer m_VisibleLeafIndicesBuffer;          // per-frame visible leaf node indices
-        GraphicsBuffer m_VisibleLeafPrefixBuffer;           // per-frame prefix starts
-        int m_TotalVisibleFromLeaves;                       // total visible splats via leaf indirection this frame
-        bool m_UseLeafIndirection = false;                   // always true for new optimization (could be heuristic later)
-        int m_OthersLeafNodeIndex = -1;                     // synthetic leaf node index for outliers, -1 if none
-        // ---------------------------------------------------------------------
-        
-        // Configuration
-        int m_MaxDepth;
-        int m_MaxSplatsPerLeaf;
-        Bounds m_RootBounds;
-        bool m_Built;
+        // Note: per-node splat indices are stored inside OctreeNode.splatIndices for leaf nodes.
+         readonly List<int> m_VisibleSplatIndices = new();
+         
+         // Configuration
+         int m_MaxDepth;
+         int m_MaxSplatsPerLeaf;
+         Bounds m_RootBounds;
+         bool m_Built;
 
-        // GPU buffer for legacy visible splat indices (updated per frame) - retained for backward compatibility
+        // GPU buffer for visible splat indices (updated per frame/N frames)
         GraphicsBuffer m_VisibleIndicesBuffer;
 
         // Outlier splat indices that lie outside the main root bounds (always included in culling)
@@ -67,17 +51,8 @@ namespace GaussianSplatting.Runtime
         public int nodeCount => m_Nodes.Count;
         public int totalSplats => m_SplatInfos.Count;
         public bool isBuilt => m_Built;
-        public GraphicsBuffer visibleIndicesBuffer => m_VisibleIndicesBuffer; // legacy path buffer
+        public GraphicsBuffer visibleIndicesBuffer => m_VisibleIndicesBuffer;
         public int visibleSplatCount { get; private set; }
-
-        // New optimization public accessors
-        public bool usingLeafIndirection => m_UseLeafIndirection && m_LeafSplatIndicesBuffer != null && m_LeafMetaBuffer != null;
-        public GraphicsBuffer leafMetaBuffer => m_LeafMetaBuffer;                 // uint2(base,count) per node
-        public GraphicsBuffer leafSplatIndicesBuffer => m_LeafSplatIndicesBuffer; // flattened splat indices
-        public GraphicsBuffer visibleLeafIndicesBuffer => m_VisibleLeafIndicesBuffer; // per-frame visible leaf node indices
-        public GraphicsBuffer visibleLeafPrefixBuffer => m_VisibleLeafPrefixBuffer;   // per-frame prefix start array
-        public int visibleLeafCount => m_VisibleLeafNodeIndices.Count;
-        public int totalVisibleLeafMappedSplats => m_TotalVisibleFromLeaves;      // same as visibleSplatCount when using indirection
 
         /// <summary>
         /// Initialize octree parameters. Call this before building.
@@ -96,6 +71,7 @@ namespace GaussianSplatting.Runtime
         public void Build(NativeArray<float3> splatPositions, Bounds sceneBounds)
         {
             Clear();
+            // m_OthersNodeIndex removed - use m_OthersIndices list instead
             
             if (splatPositions.Length == 0)
             {
@@ -174,23 +150,20 @@ namespace GaussianSplatting.Runtime
             for (int i = 0; i < inCount; i++) rootSplatList.Add(i); // indices into m_SplatInfos
             BuildRecursive(0, 0, rootSplatList);
 
-            // Handle remaining outliers: put their original indices into m_OthersIndices list
+            // Handle remaining outliers: put their original indices into m_SplatIndices and track them in m_OthersIndices
             m_OthersIndices.Clear();
             if (othersCount > 0)
             {
                 for (int i = 0; i < othersCount; i++)
                 {
                     int orig = m_SplatInfos[inCount + i].originalIndex;
-                    m_OthersIndices.Add(orig);
+                     m_OthersIndices.Add(orig);
                 }
             }
 
-            // Flatten leaves (including synthetic outliers leaf if needed)
-            FlattenLeavesIncludeOutliers();
-
             m_Built = true;
 
-            Debug.Log($"Octree build completed: {m_Nodes.Count} total nodes, others={m_OthersIndices.Count}, flattenedLeafIndices={m_FlatLeafSplatIndices.Count}");
+            Debug.Log($"Octree build completed: {m_Nodes.Count} total nodes, others={m_OthersIndices.Count}");
         }
 
         void BuildRecursive(int nodeIndex, int depth, List<int> splatList)
@@ -289,99 +262,8 @@ namespace GaussianSplatting.Runtime
             }
          }
 
-        // Flatten leaf splat indices into contiguous array + meta (base,count). Add synthetic leaf for outliers.
-        void FlattenLeavesIncludeOutliers()
-        {
-            m_FlatLeafSplatIndices.Clear();
-            // Reserve approximate capacity
-            m_FlatLeafSplatIndices.Capacity = Mathf.Max(m_FlatLeafSplatIndices.Capacity, totalSplats);
-            
-            // Iterate nodes, assign base/count
-            for (int i = 0; i < m_Nodes.Count; i++)
-            {
-                var node = m_Nodes[i];
-                if (node.isLeaf && node.splatIndices != null && node.splatIndices.Count > 0)
-                {
-                    node.baseOffset = m_FlatLeafSplatIndices.Count;
-                    node.count = node.splatIndices.Count;
-                    m_FlatLeafSplatIndices.AddRange(node.splatIndices);
-                    m_Nodes[i] = node;
-                }
-                else
-                {
-                    node.baseOffset = -1;
-                    node.count = 0;
-                    m_Nodes[i] = node;
-                }
-            }
-
-            // Synthetic leaf for outliers (always considered visible)
-            m_OthersLeafNodeIndex = -1;
-            if (m_OthersIndices.Count > 0)
-            {
-                var othersNode = new OctreeNode
-                {
-                    bounds = new Bounds(m_RootBounds.center, Vector3.zero),
-                    isLeaf = true,
-                    splatIndices = null, // we rely only on flattened data
-                    childIndices = null,
-                    baseOffset = m_FlatLeafSplatIndices.Count,
-                    count = m_OthersIndices.Count
-                };
-                m_FlatLeafSplatIndices.AddRange(m_OthersIndices);
-                m_OthersLeafNodeIndex = m_Nodes.Count;
-                m_Nodes.Add(othersNode);
-            }
-
-            // Upload static GPU buffers
-            UploadStaticLeafBuffers();
-        }
-
-        void UploadStaticLeafBuffers()
-        {
-            // Leaf meta buffer (uint2 per node: base, count) - allocate for all nodes for easy indexing
-            int nodeCountLocal = m_Nodes.Count;
-            var metaNative = new NativeArray<uint2>(nodeCountLocal, Allocator.Temp, NativeArrayOptions.ClearMemory);
-            for (int i = 0; i < nodeCountLocal; i++)
-            {
-                var n = m_Nodes[i];
-                if (n.baseOffset >= 0 && n.count > 0)
-                {
-                    metaNative[i] = new uint2((uint)n.baseOffset, (uint)n.count);
-                }
-            }
-
-            m_LeafMetaBuffer?.Dispose();
-            m_LeafMetaBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, nodeCountLocal, UnsafeUtility.SizeOf<uint2>())
-            {
-                name = "GaussianSplatLeafMeta"
-            };
-            m_LeafMetaBuffer.SetData(metaNative);
-            metaNative.Dispose();
-
-            // Flattened indices buffer
-            int flatCount = m_FlatLeafSplatIndices.Count;
-            if (flatCount > 0)
-            {
-                var flatNative = new NativeArray<uint>(flatCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-                for (int i = 0; i < flatCount; i++) flatNative[i] = (uint)m_FlatLeafSplatIndices[i];
-                m_LeafSplatIndicesBuffer?.Dispose();
-                m_LeafSplatIndicesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, flatCount, sizeof(uint))
-                {
-                    name = "GaussianSplatLeafFlattenedIndices"
-                };
-                m_LeafSplatIndicesBuffer.SetData(flatNative);
-                flatNative.Dispose();
-            }
-            else
-            {
-                m_LeafSplatIndicesBuffer?.Dispose();
-                m_LeafSplatIndicesBuffer = null;
-            }
-        }
-
          /// <summary>
-         /// Perform frustum culling and update visible splat (or leaf) indices.
+         /// Perform frustum culling and update visible splat indices.
          /// Returns number of visible splats.
          /// </summary>
          public int CullFrustum(Camera camera)
@@ -389,98 +271,34 @@ namespace GaussianSplatting.Runtime
              if (!m_Built)
                  return 0;
 
-             // Decide path (currently always use leaf indirection if available)
-             if (usingLeafIndirection)
-             {
-                 CullLeaves(camera);
-                 visibleSplatCount = m_TotalVisibleFromLeaves;
-                 return visibleSplatCount;
-             }
-
-             // Legacy path (should rarely execute once leaf indirection enabled)
              m_VisibleSplatIndices.Clear();
+             
+             // Extract frustum planes from camera
              var frustumPlanes = GeometryUtility.CalculateFrustumPlanes(camera);
-             CullNodeRecursiveCollectSplats(0, frustumPlanes);
+             
+             // Traverse octree and collect visible splats
+            CullNodeRecursive(0, frustumPlanes);
+
              // Always include 'others' outlier splats
              if (m_OthersIndices.Count > 0)
+             {
+                 // Fast bulk append outlier indices
                  m_VisibleSplatIndices.AddRange(m_OthersIndices);
+             }
+             
              visibleSplatCount = m_VisibleSplatIndices.Count;
+             
+             // Debug log culling performance
+            //float cullingRatio = (float)visibleSplatCount / Mathf.Max(1, m_SplatInfos.Count);
+            //Debug.Log($"Octree culling: {visibleSplatCount}/{m_SplatInfos.Count} splats visible ({cullingRatio:P1})");
+             
+             // Update GPU buffer
              UpdateVisibleIndicesBuffer();
+             
              return visibleSplatCount;
          }
 
-        void CullLeaves(Camera camera)
-        {
-            m_VisibleLeafNodeIndices.Clear();
-            m_VisibleLeafPrefix.Clear();
-            m_TotalVisibleFromLeaves = 0;
-            if (m_Nodes.Count == 0) return;
-            var planes = GeometryUtility.CalculateFrustumPlanes(camera);
-            // Traverse all leaf nodes (simple linear scan acceptable since number of leaves << splats)
-            for (int i = 0; i < m_Nodes.Count; i++)
-            {
-                var node = m_Nodes[i];
-                if (!node.isLeaf || node.count <= 0) continue;
-                if (i == m_OthersLeafNodeIndex) continue; // handle separately (always visible)
-                if (!GeometryUtility.TestPlanesAABB(planes, node.bounds)) continue;
-                m_VisibleLeafNodeIndices.Add(i);
-            }
-            // Always append synthetic outliers leaf (if any)
-            if (m_OthersLeafNodeIndex >= 0)
-                m_VisibleLeafNodeIndices.Add(m_OthersLeafNodeIndex);
-            // Build prefix and total
-            int running = 0;
-            for (int i = 0; i < m_VisibleLeafNodeIndices.Count; i++)
-            {
-                m_VisibleLeafPrefix.Add(running);
-                var node = m_Nodes[m_VisibleLeafNodeIndices[i]];
-                running += node.count;
-            }
-            m_TotalVisibleFromLeaves = running;
-            UploadVisibleLeafBuffers();
-        }
-
-        void UploadVisibleLeafBuffers()
-        {
-            // Upload visible leaf indices
-            int leafCount = m_VisibleLeafNodeIndices.Count;
-            if (leafCount == 0)
-            {
-                m_VisibleLeafIndicesBuffer?.Dispose(); m_VisibleLeafIndicesBuffer = null;
-                m_VisibleLeafPrefixBuffer?.Dispose(); m_VisibleLeafPrefixBuffer = null;
-                return;
-            }
-            // Ensure/resize buffers
-            if (m_VisibleLeafIndicesBuffer == null || m_VisibleLeafIndicesBuffer.count < leafCount)
-            {
-                m_VisibleLeafIndicesBuffer?.Dispose();
-                m_VisibleLeafIndicesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Mathf.NextPowerOfTwo(leafCount), sizeof(uint))
-                {
-                    name = "GaussianSplatVisibleLeafIndices"
-                };
-            }
-            if (m_VisibleLeafPrefixBuffer == null || m_VisibleLeafPrefixBuffer.count < leafCount)
-            {
-                m_VisibleLeafPrefixBuffer?.Dispose();
-                m_VisibleLeafPrefixBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Mathf.NextPowerOfTwo(leafCount), sizeof(uint))
-                {
-                    name = "GaussianSplatVisibleLeafPrefix"
-                };
-            }
-            var visLeafNative = new NativeArray<uint>(leafCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            var prefixNative = new NativeArray<uint>(leafCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
-            for (int i = 0; i < leafCount; i++)
-            {
-                visLeafNative[i] = (uint)m_VisibleLeafNodeIndices[i];
-                prefixNative[i] = (uint)m_VisibleLeafPrefix[i];
-            }
-            m_VisibleLeafIndicesBuffer.SetData(visLeafNative, 0, 0, leafCount);
-            m_VisibleLeafPrefixBuffer.SetData(prefixNative, 0, 0, leafCount);
-            visLeafNative.Dispose();
-            prefixNative.Dispose();
-        }
-
-         void CullNodeRecursiveCollectSplats(int nodeIndex, Plane[] frustumPlanes)
+         void CullNodeRecursive(int nodeIndex, Plane[] frustumPlanes)
         {
             if (nodeIndex >= m_Nodes.Count)
                 return;
@@ -505,6 +323,7 @@ namespace GaussianSplatting.Runtime
             else
             {
                 // Recursively test child nodes - only traverse non-empty children
+                // Traverse registered child indices
                 if (node.childIndices != null)
                 {
                     foreach (var childIndex in node.childIndices)
@@ -514,7 +333,7 @@ namespace GaussianSplatting.Runtime
                             var childNode = m_Nodes[childIndex];
                             if ((childNode.splatIndices != null && childNode.splatIndices.Count > 0) || !childNode.isLeaf)
                             {
-                                CullNodeRecursiveCollectSplats(childIndex, frustumPlanes);
+                                CullNodeRecursive(childIndex, frustumPlanes);
                             }
                         }
                     }
@@ -573,11 +392,10 @@ namespace GaussianSplatting.Runtime
             if (node.isLeaf)
             {
                 // Only count non-empty leaves
-                if ((node.splatIndices != null && node.splatIndices.Count > 0) || node.count > 0)
+                if (node.splatIndices != null && node.splatIndices.Count > 0)
                 {
                     leafNodes++;
-                    int c = node.count > 0 ? node.count : (node.splatIndices?.Count ?? 0);
-                    maxSplats = Mathf.Max(maxSplats, c);
+                    maxSplats = Mathf.Max(maxSplats, node.splatIndices.Count);
                 }
             }
             else
@@ -614,8 +432,7 @@ namespace GaussianSplatting.Runtime
                      continue;
 
                  // Skip empty leaves
-                 int c = node.count > 0 ? node.count : (node.splatIndices?.Count ?? 0);
-                 if (c <= 0)
+                 if (node.splatIndices == null || node.splatIndices.Count <= 0)
                      continue;
 
                  Gizmos.DrawWireCube(node.bounds.center, node.bounds.size);
@@ -629,24 +446,11 @@ namespace GaussianSplatting.Runtime
              m_Nodes.Clear();
              m_SplatInfos.Clear();
              m_VisibleSplatIndices.Clear();
-             m_FlatLeafSplatIndices.Clear();
-             m_VisibleLeafNodeIndices.Clear();
-             m_VisibleLeafPrefix.Clear();
              m_VisibleIndicesBuffer?.Dispose();
              m_VisibleIndicesBuffer = null;
-             m_LeafSplatIndicesBuffer?.Dispose();
-             m_LeafSplatIndicesBuffer = null;
-             m_LeafMetaBuffer?.Dispose();
-             m_LeafMetaBuffer = null;
-             m_VisibleLeafIndicesBuffer?.Dispose();
-             m_VisibleLeafIndicesBuffer = null;
-             m_VisibleLeafPrefixBuffer?.Dispose();
-             m_VisibleLeafPrefixBuffer = null;
              visibleSplatCount = 0;
-             m_TotalVisibleFromLeaves = 0;
              m_Built = false;
              m_OthersIndices.Clear();
-             m_OthersLeafNodeIndex = -1;
          }
 
          public void Dispose()

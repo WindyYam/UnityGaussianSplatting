@@ -255,13 +255,14 @@ namespace GaussianSplatting.Runtime
                     int visibleCount = gs.PerformOctreeCulling(cam);
                     if (visibleCount > 0)
                     {
-                        // visibleCount already reflects leaf indirection total if used
                         instanceCount = visibleCount;
+                        // Update material property block with culling results
                         gs.SetAssetDataOnMaterial(mpb);
                     }
                     else
                     {
-                        continue; // nothing visible
+                        // Skip rendering if no splats are visible
+                        continue;
                     }
                 }
 
@@ -466,12 +467,6 @@ namespace GaussianSplatting.Runtime
             public static readonly int CameraTargetTexture = Shader.PropertyToID("_CameraTargetTexture");
             public static readonly int SplatIndexMap = Shader.PropertyToID("_SplatIndexMap");
             public static readonly int UseIndexMapping = Shader.PropertyToID("_UseIndexMapping");
-            // New leaf indirection props
-            public static readonly int LeafMeta = Shader.PropertyToID("_LeafMeta");
-            public static readonly int LeafSplatIndices = Shader.PropertyToID("_LeafSplatIndices");
-            public static readonly int VisibleLeafIndices = Shader.PropertyToID("_VisibleLeafIndices");
-            public static readonly int VisibleLeafPrefix = Shader.PropertyToID("_VisibleLeafPrefix");
-            public static readonly int VisibleLeafCount = Shader.PropertyToID("_VisibleLeafCount");
         }
 
 
@@ -581,32 +576,12 @@ namespace GaussianSplatting.Runtime
             // Set octree culling properties
             var settings = GaussianSplatSettings.instance;
             bool useOctreeCulling = settings.m_EnableOctreeCulling && m_OctreeBuilt && m_Octree != null;
-            int mappingMode = 0; // 0 none, 1 flat list, 2 leaf indirection
-            if (useOctreeCulling && m_Octree != null)
+            mat.SetInteger(Props.UseIndexMapping, useOctreeCulling ? 1 : 0);
+            
+            if (useOctreeCulling && m_Octree.visibleIndicesBuffer != null)
             {
-                if (m_Octree.usingLeafIndirection)
-                {
-                    mappingMode = 2;
-                    // static buffers
-                    if (m_Octree.leafMetaBuffer != null)
-                        mat.SetBuffer(Props.LeafMeta, m_Octree.leafMetaBuffer);
-                    if (m_Octree.leafSplatIndicesBuffer != null)
-                        mat.SetBuffer(Props.LeafSplatIndices, m_Octree.leafSplatIndicesBuffer);
-                    // per-frame buffers
-                    if (m_Octree.visibleLeafIndicesBuffer != null && m_Octree.visibleLeafPrefixBuffer != null)
-                    {
-                        mat.SetBuffer(Props.VisibleLeafIndices, m_Octree.visibleLeafIndicesBuffer);
-                        mat.SetBuffer(Props.VisibleLeafPrefix, m_Octree.visibleLeafPrefixBuffer);
-                        mat.SetInteger(Props.VisibleLeafCount, m_Octree.visibleLeafCount);
-                    }
-                }
-                else if (m_Octree.visibleIndicesBuffer != null)
-                {
-                    mappingMode = 1;
-                    mat.SetBuffer(Props.SplatIndexMap, m_Octree.visibleIndicesBuffer);
-                }
+                mat.SetBuffer(Props.SplatIndexMap, m_Octree.visibleIndicesBuffer);
             }
-            mat.SetInteger(Props.UseIndexMapping, mappingMode);
         }
 
         static void DisposeBuffer(ref GraphicsBuffer buf)
