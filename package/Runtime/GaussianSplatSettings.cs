@@ -74,7 +74,7 @@ namespace GaussianSplatting.Runtime
         [Tooltip("Enable octree-based frustum culling for improved performance")]
         public bool m_EnableOctreeCulling = true;
         [Tooltip("Maximum octree depth (4-6 recommended)")]
-        [Range(1, 8)] public int m_OctreeMaxDepth = 5;
+        [Range(3, 8)] public int m_OctreeMaxDepth = 5;
         [Tooltip("Maximum splats per octree leaf node (64-256 recommended)")]
         [Range(32, 512)] public int m_OctreeMaxSplatsPerLeaf = 128;
         [Tooltip("Update culling every N frames (1 = every frame, higher = better performance but less precise)")]

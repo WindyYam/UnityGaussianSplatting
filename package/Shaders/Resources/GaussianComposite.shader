@@ -64,7 +64,7 @@ CGPROGRAM
 
 half4 frag (v2f i) : SV_Target
 {
-    return DoTemporalAA(i.uv, 2, 2, 2);
+    return DoTemporalAA(i.uv);
 }
 ENDCG
         }
