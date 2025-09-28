@@ -29,7 +29,7 @@ float _SplatScale;
 float _SplatOpacityScale;
 uint _SHOrder;
 uint _SHOnly;
-uint _UseIndexMapping; // 1 when using octree culling, 0 otherwise
+uint _UseIndexMapping; // 0=none,1=flat index map,2=leaf indirection
 float4x4 _MatrixMV;
 float4x4 _PrevMatrixMV;
 float4x4 _PrevMatrixV;
@@ -58,15 +58,20 @@ cbuffer SplatGlobalUniforms // match struct SplatGlobalUniforms in C#
 	uint sgu_padding0; // padding to align cbuffer to 16 bytes
 }
 
-StructuredBuffer<uint> _SplatIndexMap; // optional mapping
+StructuredBuffer<uint> _SplatIndexMap; // legacy flat mapping (mode 1)
+// New leaf indirection buffers (mode 2)
+StructuredBuffer<uint2> _LeafMeta;              // uint2(baseOffset,count) per node
+StructuredBuffer<uint>  _LeafSplatIndices;      // flattened splat indices for all leaves
+StructuredBuffer<uint>  _VisibleLeafIndices;    // indices (into node array) of visible leaves this frame
+StructuredBuffer<uint>  _VisibleLeafPrefix;     // prefix start for each visible leaf
+uint _VisibleLeafCount;                         // number of visible leaves
 
-// Helper function to decompose 2D covariance into screen-space axes
+// Re-added after edit: helper to decompose 2D covariance
 void DecomposeCovariance(float3 cov2d, out float2 v1, out float2 v2)
 {
-    // same as in antimatter15/splat
     float diag1 = cov2d.x, diag2 = cov2d.z, offDiag = cov2d.y;
     float mid = 0.5f * (diag1 + diag2);
-    float radius = length(float2((diag1 - diag2) / 2.0, offDiag));
+    float radius = length(float2((diag1 - diag2) * 0.5f, offDiag));
     float lambda1 = mid + radius;
     float lambda2 = max(mid - radius, 0.1);
     float2 diagVec = normalize(float2(offDiag, lambda1 - diag1));
@@ -76,12 +81,38 @@ void DecomposeCovariance(float3 cov2d, out float2 v1, out float2 v2)
     v2 = min(sqrt(2.0 * lambda2), maxSize) * float2(diagVec.y, -diagVec.x);
 }
 
+uint MapInstanceToSplat(uint instID)
+{
+    // Binary search visible leaf whose prefix range contains instID
+    // Assumes _VisibleLeafPrefix sorted ascending
+    uint lo = 0, hi = _VisibleLeafCount;
+    while (lo + 1u < hi)
+    {
+        uint mid = (lo + hi) >> 1u;
+        uint midPrefix = _VisibleLeafPrefix[mid];
+        if (midPrefix <= instID)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    uint leafIdxNode = _VisibleLeafIndices[lo];
+    uint2 meta = _LeafMeta[leafIdxNode];
+    uint baseOffset = meta.x;
+    uint count = meta.y;
+    uint localOffset = instID - _VisibleLeafPrefix[lo];
+    if (localOffset >= count) // safety (should not happen)
+        localOffset = count > 0 ? (count - 1u) : 0u;
+    return _LeafSplatIndices[baseOffset + localOffset];
+}
+
 v2f vert (uint vtxID : SV_VertexID, uint instID : SV_InstanceID)
 {
     v2f o = (v2f)0;
     uint realIdx = instID;
-    if (_UseIndexMapping)
+    if (_UseIndexMapping == 1)
         realIdx = _SplatIndexMap[instID];
+    else if (_UseIndexMapping == 2)
+        realIdx = MapInstanceToSplat(instID);
 
     o.idx = realIdx + sgu_frameOffset;
     SplatData splat = LoadSplatData(realIdx);
