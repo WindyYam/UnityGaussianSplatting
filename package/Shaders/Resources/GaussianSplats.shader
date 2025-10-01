@@ -29,7 +29,6 @@ float _SplatScale;
 float _SplatOpacityScale;
 uint _SHOrder;
 uint _SHOnly;
-uint _UseIndexMapping; // 1 when using octree culling, 0 otherwise
 float4x4 _MatrixMV;
 float4x4 _PrevMatrixMV;
 float4x4 _PrevMatrixV;
@@ -37,6 +36,7 @@ float4x4 _MatrixObjectToWorld;
 float4x4 _MatrixWorldToObject;
 float4 _VecScreenParams;
 float4 _VecWorldSpaceCameraPos;
+uint _UseIndexMapping; // 1 when using octree culling, 0 otherwise
 
 struct v2f
 {

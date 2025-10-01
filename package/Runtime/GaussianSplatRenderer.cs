@@ -67,10 +67,8 @@ namespace GaussianSplatting.Runtime
 
             var mpb = new MaterialPropertyBlock();
             // Set immutable splat data buffers once during registration if resources are ready
-            if (r.HasValidRenderSetup)
-            {
-                r.SetAssetDataOnMaterial(mpb);
-            }
+            r.SetAssetDataOnMaterial(mpb);
+
             m_Splats.Add(r, mpb);
         }
 
@@ -119,6 +117,8 @@ namespace GaussianSplatting.Runtime
             Object.DestroyImmediate(m_MatDebugBoxes);
             m_TemporalFilter?.Dispose();
             m_TemporalFilter = null;
+            // Cleanup static dummy buffers when no more splats exist
+            GaussianSplatRenderer.DisposeDummyBuffers();
             Camera.onPreCull -= OnPreCullCamera;
         }
 
@@ -414,6 +414,9 @@ namespace GaussianSplatting.Runtime
         [Range(0, 3)] [Tooltip("Spherical Harmonics order to use")]
         public int m_SHOrder = 3;
 
+        // Static dummy buffer for WebGPU compatibility - ensures _SplatIndexMap is always bound
+        static GraphicsBuffer s_DummyIndexBuffer;
+
         int m_SplatCount; // initially same as asset splat count
         GraphicsBuffer m_GpuPosData;
         GraphicsBuffer m_GpuOtherData;
@@ -578,9 +581,26 @@ namespace GaussianSplatting.Runtime
             bool useOctreeCulling = settings.m_EnableOctreeCulling && m_OctreeBuilt && m_Octree != null;
             mat.SetInteger(Props.UseIndexMapping, useOctreeCulling ? 1 : 0);
             
+            // Always bind an index buffer for WebGPU compatibility
             if (useOctreeCulling && m_Octree.visibleIndicesBuffer != null)
             {
                 mat.SetBuffer(Props.SplatIndexMap, m_Octree.visibleIndicesBuffer);
+            }
+            else
+            {
+                // Bind dummy buffer when not using octree culling to satisfy WebGPU requirements
+                EnsureDummyIndexBuffer();
+                mat.SetBuffer(Props.SplatIndexMap, s_DummyIndexBuffer);
+            }
+        }
+
+        static void EnsureDummyIndexBuffer()
+        {
+            if (s_DummyIndexBuffer == null)
+            {
+                s_DummyIndexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, 4) { name = "GaussianDummyIndexMap" };
+                // Fill with dummy data - just index 0
+                s_DummyIndexBuffer.SetData(new uint[] { 0 });
             }
         }
 
@@ -588,6 +608,11 @@ namespace GaussianSplatting.Runtime
         {
             buf?.Dispose();
             buf = null;
+        }
+
+        public static void DisposeDummyBuffers()
+        {
+            DisposeBuffer(ref s_DummyIndexBuffer);
         }
 
         void DisposeResourcesForAsset()

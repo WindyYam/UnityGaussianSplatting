@@ -163,6 +163,21 @@ namespace GaussianSplatting.Runtime
 
             m_Built = true;
 
+            // Ensure a GPU buffer exists even if there are no visible splats yet.
+            // Allocate a minimal 1-entry structured buffer so renderer code can safely bind/check it.
+            if (m_VisibleIndicesBuffer == null)
+            {
+                m_VisibleIndicesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, sizeof(uint))
+                {
+                    name = "GaussianSplatVisibleIndices"
+                };
+                var init = new NativeArray<uint>(1, Allocator.Temp);
+                init[0] = 0u;
+                m_VisibleIndicesBuffer.SetData(init);
+                visibleSplatCount = 0;
+                init.Dispose();
+            }
+
             Debug.Log($"Octree build completed: {m_Nodes.Count} total nodes, others={m_OthersIndices.Count}");
         }
 
@@ -312,12 +327,9 @@ namespace GaussianSplatting.Runtime
             if (node.isLeaf)
             {
                 // Add all splats in this leaf to visible list (skip empty leaves)
-                if (node.splatIndices != null)
+                if (node.splatIndices != null && node.splatIndices.Count > 0)
                 {
-                    for (int i = 0; i < node.splatIndices.Count; i++)
-                    {
-                        m_VisibleSplatIndices.Add(node.splatIndices[i]);
-                    }
+                    m_VisibleSplatIndices.AddRange(node.splatIndices);
                 }
             }
             else
