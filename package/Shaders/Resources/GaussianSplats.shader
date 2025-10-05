@@ -228,11 +228,11 @@ uint3 pcg3d16(uint3 v)
     return v;
 }
 
-struct FragOut { half4 col : SV_Target0; half2 motion : SV_Target1; };
+struct FragOut { half4 col : SV_Target0; half4 motion : SV_Target1; };
 
 FragOut frag (v2f i)
 {
-    FragOut o; o.col = 0; o.motion = 0;
+    FragOut o; o.col = 0; o.motion = half4(0, 0, 0, 0);
     float power = -dot(i.pos, i.pos);
     half alpha = exp(power);
     if (i.col.a >= 0)
@@ -300,7 +300,7 @@ FragOut frag (v2f i)
         i.col.rgb *= alpha; // premultiply
         // This mode will require proper depth sorting for correct results
     }
-    o.motion = half2(i.vel);
+    o.motion = half4(i.vel, 0, 0); // Use xy for motion vectors, zw unused for WebGPU compatibility
     o.col = half4(i.col.rgb, alpha);
     return o;
 }

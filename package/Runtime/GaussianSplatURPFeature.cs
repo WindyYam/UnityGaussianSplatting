@@ -69,7 +69,7 @@ namespace GaussianSplatting.Runtime
                     var motionDesc = cameraData.cameraTargetDescriptor;
                     motionDesc.depthBufferBits = 0;
                     motionDesc.msaaSamples = 1;
-                    motionDesc.graphicsFormat = GraphicsFormat.R16G16_SFloat;
+                    motionDesc.graphicsFormat = GraphicsFormat.R16G16B16A16_SFloat;
                     var motionHandle = UniversalRenderer.CreateRenderGraphTexture(renderGraph, motionDesc, GaussianMotionRTName, true);
                     passData.GaussianSplatMotionRT = motionHandle;
                     builder.UseTexture(motionHandle, AccessFlags.Write);

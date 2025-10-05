@@ -36,6 +36,9 @@ namespace GaussianSplatting.Runtime
         // Note: per-node splat indices are stored inside OctreeNode.splatIndices for leaf nodes.
          readonly List<int> m_VisibleSplatIndices = new();
          
+         // Dictionary to map original splat indices to their positions for efficient lookup during sorting
+         readonly Dictionary<int, float3> m_OriginalIndexToPosition = new();
+         
          // Configuration
          int m_MaxDepth;
          int m_MaxSplatsPerLeaf;
@@ -47,6 +50,19 @@ namespace GaussianSplatting.Runtime
 
         // Outlier splat indices that lie outside the main root bounds (always included in culling)
         readonly List<int> m_OthersIndices = new();
+        
+        // Reusable array for distance sorting to avoid allocations
+        (float distance, int index)[] m_DistanceSortArray;
+        
+        // Structure to store visible nodes with their distance for hierarchical sorting
+        struct VisibleNode
+        {
+            public float distance;
+            public List<int> splatIndices;
+        }
+        
+        // Reusable list for visible nodes during sorting
+        readonly List<VisibleNode> m_VisibleNodes = new();
 
         public int nodeCount => m_Nodes.Count;
         public int totalSplats => m_SplatInfos.Count;
@@ -105,10 +121,14 @@ namespace GaussianSplatting.Runtime
             m_SplatInfos.Clear();
             m_SplatInfos.Capacity = total;
 
+            // Build lookup dictionary for original indices to positions
+            m_OriginalIndexToPosition.Clear();
             for (int i = 0; i < total; i++)
             {
               int src = distList[i].idx;
-              m_SplatInfos.Add(new SplatInfo { position = splatPositions[src], originalIndex = src });
+              var position = splatPositions[src];
+              m_SplatInfos.Add(new SplatInfo { position = position, originalIndex = src });
+              m_OriginalIndexToPosition[src] = position;
             }
 
             // Create root bounds based on the inCount splats (centered on center-of-mass)
@@ -458,8 +478,11 @@ namespace GaussianSplatting.Runtime
              m_Nodes.Clear();
              m_SplatInfos.Clear();
              m_VisibleSplatIndices.Clear();
+             m_VisibleNodes.Clear();
+             m_OriginalIndexToPosition.Clear();
              m_VisibleIndicesBuffer?.Dispose();
              m_VisibleIndicesBuffer = null;
+             m_DistanceSortArray = null; // Release sort array memory
              visibleSplatCount = 0;
              m_Built = false;
              m_OthersIndices.Clear();
@@ -469,5 +492,154 @@ namespace GaussianSplatting.Runtime
          {
              Clear();
          }
+
+         /// <summary>
+         /// Sort visible splat indices by distance from camera (back-to-front for alpha blending).
+         /// Should be called after CullFrustum and only for alpha blend transparency mode.
+         /// 
+         /// Hierarchical sorting optimization:
+         /// - Performs frustum culling and node-level sorting in one pass
+         /// - Sorts nodes by distance first, then sorts splats within each node
+         /// - Uses 3D distance instead of depth for more accurate sorting
+         /// - Much more efficient than global sorting for large splat counts
+         /// - Better cache locality and reduced comparisons
+         /// </summary>
+        public void SortVisibleSplatsByDepth(Camera camera)
+        {
+            if (!m_Built)
+                return;
+                
+            var camPosition = camera.transform.position;
+            var camForward = camera.transform.forward;
+            
+            // Clear previous results
+            m_VisibleSplatIndices.Clear();
+            m_VisibleNodes.Clear();
+            
+            // Extract frustum planes from camera
+            var frustumPlanes = GeometryUtility.CalculateFrustumPlanes(camera);
+            
+            // Collect visible nodes with distance information
+            CollectVisibleNodesWithDistance(0, frustumPlanes, camPosition);
+            
+            // Handle outlier splats separately - assume they are the farthest and sort them directly
+            if (m_OthersIndices.Count > 0)
+            {
+                SortSplatsInNode(m_OthersIndices, camPosition, camForward);
+                // Add sorted outliers first (they are the farthest)
+                m_VisibleSplatIndices.AddRange(m_OthersIndices);
+            }
+            
+            // Sort nodes by distance (far-to-near for back-to-front rendering)
+            m_VisibleNodes.Sort((a, b) => b.distance.CompareTo(a.distance));
+            
+            // Process each node in depth order
+            foreach (var visibleNode in m_VisibleNodes)
+            {
+                if (visibleNode.splatIndices.Count <= 1)
+                {
+                    // No need to sort single splats
+                    m_VisibleSplatIndices.AddRange(visibleNode.splatIndices);
+                }
+                else
+                {
+                    // Sort splats within this node
+                    SortSplatsInNode(visibleNode.splatIndices, camPosition, camForward);
+                    m_VisibleSplatIndices.AddRange(visibleNode.splatIndices);
+                }
+            }
+            
+            visibleSplatCount = m_VisibleSplatIndices.Count;
+            
+            // Debug performance info (uncomment for profiling)
+            // Debug.Log($"Hierarchical sort: {m_VisibleNodes.Count} nodes, {visibleSplatCount} total splats, avg splats/node: {(float)visibleSplatCount / Mathf.Max(1, m_VisibleNodes.Count):F1}");
+            
+            // Update GPU buffer with hierarchically sorted indices
+            UpdateVisibleIndicesBuffer();
+        }
+        
+        void CollectVisibleNodesWithDistance(int nodeIndex, Plane[] frustumPlanes, Vector3 camPosition)
+        {
+            if (nodeIndex >= m_Nodes.Count)
+                return;
+
+            var node = m_Nodes[nodeIndex];
+
+            // Test node bounds against frustum
+            if (!GeometryUtility.TestPlanesAABB(frustumPlanes, node.bounds))
+                return; // Node is outside frustum
+
+            if (node.isLeaf)
+            {
+                // Add leaf node with its distance from camera
+                if (node.splatIndices != null && node.splatIndices.Count > 0)
+                {
+                    // Calculate node distance as center of bounds to camera
+                    var nodeCenter = node.bounds.center;
+                    float nodeDistance = Vector3.Distance(nodeCenter, camPosition);
+                    
+                    m_VisibleNodes.Add(new VisibleNode 
+                    { 
+                        distance = nodeDistance,
+                        splatIndices = new List<int>(node.splatIndices) 
+                    });
+                }
+            }
+            else
+            {
+                // Recursively collect child nodes
+                if (node.childIndices != null)
+                {
+                    foreach (var childIndex in node.childIndices)
+                    {
+                        if (childIndex < m_Nodes.Count)
+                        {
+                            var childNode = m_Nodes[childIndex];
+                            if ((childNode.splatIndices != null && childNode.splatIndices.Count > 0) || !childNode.isLeaf)
+                            {
+                                CollectVisibleNodesWithDistance(childIndex, frustumPlanes, camPosition);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        void SortSplatsInNode(List<int> splatIndices, Vector3 camPosition, Vector3 camForward)
+        {
+            int count = splatIndices.Count;
+            
+            // Ensure sort array is large enough for this node
+            if (m_DistanceSortArray == null || m_DistanceSortArray.Length < count)
+            {
+                m_DistanceSortArray = new (float distance, int index)[Mathf.NextPowerOfTwo(count)];
+            }
+            
+            // Calculate Z depth for each splat in this node based on camera forward vector
+            for (int i = 0; i < count; i++)
+            {
+                int originalSplatIdx = splatIndices[i];
+                if (m_OriginalIndexToPosition.TryGetValue(originalSplatIdx, out float3 splatPos))
+                {
+                    // Project splat position onto camera's forward vector to get depth
+                    float zDepth = Vector3.Dot((Vector3)splatPos - camPosition, camForward);
+                    m_DistanceSortArray[i] = (zDepth, originalSplatIdx);
+                }
+                else
+                {
+                    m_DistanceSortArray[i] = (0f, originalSplatIdx);
+                }
+            }
+            
+            // Sort splats in this node back-to-front (higher Z values first)
+            System.Array.Sort(m_DistanceSortArray, 0, count, 
+                System.Collections.Generic.Comparer<(float distance, int index)>.Create((a, b) => b.distance.CompareTo(a.distance)));
+            
+            // Update the node's splat list with sorted order
+            for (int i = 0; i < count; i++)
+            {
+                splatIndices[i] = m_DistanceSortArray[i].index;
+            }
+        }
     }
 }

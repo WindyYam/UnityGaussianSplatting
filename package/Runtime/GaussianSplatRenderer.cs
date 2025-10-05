@@ -21,6 +21,7 @@ namespace GaussianSplatting.Runtime
         internal static readonly ProfilerMarker s_ProfDraw = new(ProfilerCategory.Render, "GaussianSplat.Draw", MarkerFlags.SampleGPU);
         internal static readonly ProfilerMarker s_ProfCompose = new(ProfilerCategory.Render, "GaussianSplat.Compose", MarkerFlags.SampleGPU);
         internal static readonly ProfilerMarker s_ProfCalcView = new(ProfilerCategory.Render, "GaussianSplat.CalcView", MarkerFlags.SampleGPU);
+        internal static readonly ProfilerMarker s_ProfSort = new(ProfilerCategory.Render, "GaussianSplat.Sort", MarkerFlags.SampleGPU);
         // ReSharper restore MemberCanBePrivate.Global
 
         public static GaussianSplatRenderSystem instance => ms_Instance ??= new GaussianSplatRenderSystem();
@@ -160,8 +161,6 @@ namespace GaussianSplatting.Runtime
         // ReSharper disable once MemberCanBePrivate.Global - used by HDRP/URP features that are not always compiled
         public void SortAllSplats(Camera cam, CommandBuffer cmb)
         {
-            // Sorting is disabled for vertex shader mode with stochastic rendering
-            // Only keep sorting for debug box rendering if needed
             if (cam.cameraType == CameraType.Preview)
                 return;
             GaussianSplatSettings settings = GaussianSplatSettings.instance;
@@ -172,8 +171,12 @@ namespace GaussianSplatting.Runtime
             {
                 var gs = kvp.Item1;
                 var matrix = gs.transform.localToWorldMatrix;
-                // Only increment frame counter, no actual sorting for stochastic mode
+                
+                // Increment frame counter for all modes
                 ++gs.m_FrameCounter;
+                
+                // Note: For alpha blend mode with octree culling, sorting is now done 
+                // in PerformOctreeCulling() as part of the hierarchical optimization
             }
         }
 
@@ -223,9 +226,9 @@ namespace GaussianSplatting.Runtime
                         break;
                     
                     case TransparencyMode.AlphaBlend:
-                        // Standard alpha blending
-                        displayMat.SetInt(GaussianSplatRenderer.Props.SrcBlend, (int)BlendMode.OneMinusDstAlpha);
-                        displayMat.SetInt(GaussianSplatRenderer.Props.DstBlend, (int)BlendMode.One);
+                        // Premultiplied alpha blending (shader does: i.col.rgb *= alpha)
+                        displayMat.SetInt(GaussianSplatRenderer.Props.SrcBlend, (int)BlendMode.One);
+                        displayMat.SetInt(GaussianSplatRenderer.Props.DstBlend, (int)BlendMode.OneMinusSrcAlpha);
                         displayMat.SetInt(GaussianSplatRenderer.Props.ZWrite, 0);
                         break;
                 }
@@ -381,8 +384,8 @@ namespace GaussianSplatting.Runtime
                 GraphicsFormat colorGfxFormat = QualitySettings.activeColorSpace == ColorSpace.Linear
                     ? GraphicsFormat.R8G8B8A8_UNorm
                     : GraphicsFormat.R8G8B8A8_SRGB;
-                // Motion needs a linear floating format (no sRGB)
-                GraphicsFormat motionGfxFormat = GraphicsFormat.R16G16_SFloat;
+                // Motion needs a linear floating format (no sRGB) - use RGBA format for WebGPU compatibility
+                GraphicsFormat motionGfxFormat = GraphicsFormat.R16G16B16A16_SFloat;
 
                 var descColor = new RenderTextureDescriptor(rtW, rtH, colorGfxFormat, 0) { msaaSamples = 1, useMipMap = false, autoGenerateMips = false };
                 var descMotion = new RenderTextureDescriptor(rtW, rtH, motionGfxFormat, 0) { msaaSamples = 1, useMipMap = false, autoGenerateMips = false };
@@ -744,7 +747,21 @@ namespace GaussianSplatting.Runtime
             }
             
             m_LastCullingFrame = currentFrame;
-            return m_Octree.CullFrustum(camera);
+            
+            // For alpha blend mode, use hierarchical sorting which does culling + sorting in one pass
+            if (settings.m_Transparency == TransparencyMode.AlphaBlend)
+            {
+                using (GaussianSplatRenderSystem.s_ProfSort.Auto())
+                {
+                    m_Octree.SortVisibleSplatsByDepth(camera);
+                    return m_Octree.visibleSplatCount;
+                }
+            }
+            else
+            {
+                // For other modes, use regular culling only
+                return m_Octree.CullFrustum(camera);
+            }
         }
 
         void BuildOctreeForCulling()
