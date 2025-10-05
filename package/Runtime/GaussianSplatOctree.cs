@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: MIT
 
+using System; // Added for Exception
 using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
+// Added for simple threading support
+using System.Threading;
+using System.Buffers;
 
 namespace GaussianSplatting.Runtime
 {
@@ -63,6 +67,13 @@ namespace GaussianSplatting.Runtime
         
         // Reusable list for visible nodes during sorting
         readonly List<VisibleNode> m_VisibleNodes = new();
+        
+        // Enable / disable parallel sorting (public for runtime tuning)
+        public bool enableParallelSorting = true;
+        // Configurable number of worker threads for node sorting (excluding main thread)
+        public int parallelSortThreads = 16; // clamped at runtime
+        // Minimum visible node count before attempting parallel sort
+        const int k_ParallelNodeThreshold = 4;
 
         public int nodeCount => m_Nodes.Count;
         public int totalSplats => m_SplatInfos.Count;
@@ -446,7 +457,7 @@ namespace GaussianSplatting.Runtime
             }
         }
 
-        /// <summary>
+         /// <summary>
          /// Draw wireframe boxes for each non-empty leaf node. Call this from a MonoBehaviour's OnDrawGizmos or OnDrawGizmosSelected.
          /// </summary>
          public void DrawLeafBoundsGizmos(Color color)
@@ -508,120 +519,171 @@ namespace GaussianSplatting.Runtime
         {
             if (!m_Built)
                 return;
-                
             var camPosition = camera.transform.position;
             var camForward = camera.transform.forward;
-            
-            // Clear previous results
             m_VisibleSplatIndices.Clear();
             m_VisibleNodes.Clear();
-            
-            // Extract frustum planes from camera
             var frustumPlanes = GeometryUtility.CalculateFrustumPlanes(camera);
-            
-            // Collect visible nodes with distance information
             CollectVisibleNodesWithDistance(0, frustumPlanes, camPosition);
-            
-            // Handle outlier splats separately - assume they are the farthest and sort them directly
-            if (m_OthersIndices.Count > 0)
-            {
-                SortSplatsInNode(m_OthersIndices, camPosition, camForward);
-                // Add sorted outliers first (they are the farthest)
-                m_VisibleSplatIndices.AddRange(m_OthersIndices);
-            }
-            
             // Sort nodes by distance (far-to-near for back-to-front rendering)
             m_VisibleNodes.Sort((a, b) => b.distance.CompareTo(a.distance));
-            
-            // Process each node in depth order
-            foreach (var visibleNode in m_VisibleNodes)
+            bool doParallel = enableParallelSorting && SystemInfo.processorCount > 1 && m_VisibleNodes.Count >= k_ParallelNodeThreshold;
+            if (doParallel)
             {
-                if (visibleNode.splatIndices.Count <= 1)
-                {
-                    // No need to sort single splats
-                    m_VisibleSplatIndices.AddRange(visibleNode.splatIndices);
-                }
-                else
-                {
-                    // Sort splats within this node
-                    SortSplatsInNode(visibleNode.splatIndices, camPosition, camForward);
-                    m_VisibleSplatIndices.AddRange(visibleNode.splatIndices);
-                }
-            }
-            
-            visibleSplatCount = m_VisibleSplatIndices.Count;
-            
-            // Debug performance info (uncomment for profiling)
-            // Debug.Log($"Hierarchical sort: {m_VisibleNodes.Count} nodes, {visibleSplatCount} total splats, avg splats/node: {(float)visibleSplatCount / Mathf.Max(1, m_VisibleNodes.Count):F1}");
-            
-            // Update GPU buffer with hierarchically sorted indices
-            UpdateVisibleIndicesBuffer();
-        }
-        
-        void CollectVisibleNodesWithDistance(int nodeIndex, Plane[] frustumPlanes, Vector3 camPosition)
-        {
-            if (nodeIndex >= m_Nodes.Count)
-                return;
-
-            var node = m_Nodes[nodeIndex];
-
-            // Test node bounds against frustum
-            if (!GeometryUtility.TestPlanesAABB(frustumPlanes, node.bounds))
-                return; // Node is outside frustum
-
-            if (node.isLeaf)
-            {
-                // Add leaf node with its distance from camera
-                if (node.splatIndices != null && node.splatIndices.Count > 0)
-                {
-                    // Calculate node distance as center of bounds to camera
-                    var nodeCenter = node.bounds.center;
-                    float nodeDistance = Vector3.Distance(nodeCenter, camPosition);
-                    
-                    m_VisibleNodes.Add(new VisibleNode 
-                    { 
-                        distance = nodeDistance,
-                        splatIndices = new List<int>(node.splatIndices) 
-                    });
-                }
+                ParallelSortVisibleNodes(camPosition, camForward, processOutliersOnMainThread: true);
             }
             else
             {
-                // Recursively collect child nodes
-                if (node.childIndices != null)
+                // Sequential path: sort outliers first (they are assumed farthest)
+                if (m_OthersIndices.Count > 1)
+                    SortSplatsInNode(m_OthersIndices, camPosition, camForward);
+                if (m_OthersIndices.Count > 0)
+                    m_VisibleSplatIndices.AddRange(m_OthersIndices);
+                for (int i = 0; i < m_VisibleNodes.Count; i++)
                 {
-                    foreach (var childIndex in node.childIndices)
+                    var vn = m_VisibleNodes[i];
+                    if (vn.splatIndices.Count > 1)
+                        SortSplatsInNode(vn.splatIndices, camPosition, camForward);
+                }
+            }
+            // Append nodes in distance order (their lists now internally sorted)
+            for (int i = 0; i < m_VisibleNodes.Count; i++)
+                m_VisibleSplatIndices.AddRange(m_VisibleNodes[i].splatIndices);
+            visibleSplatCount = m_VisibleSplatIndices.Count;
+            UpdateVisibleIndicesBuffer();
+        }
+        
+        // Thread-safe per-node sorting using local scratch arrays (no shared m_DistanceSortArray)
+        void SortSplatsInNodeThreadSafe(List<int> splatIndices, Vector3 camPosition, Vector3 camForward)
+        {
+            int count = splatIndices.Count;
+            if (count <= 1)
+                return;
+            var scratch = ArrayPool<(float distance, int index)>.Shared.Rent(Mathf.NextPowerOfTwo(count));
+            try
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    int originalSplatIdx = splatIndices[i];
+                    if (m_OriginalIndexToPosition.TryGetValue(originalSplatIdx, out float3 splatPos))
                     {
-                        if (childIndex < m_Nodes.Count)
-                        {
-                            var childNode = m_Nodes[childIndex];
-                            if ((childNode.splatIndices != null && childNode.splatIndices.Count > 0) || !childNode.isLeaf)
-                            {
-                                CollectVisibleNodesWithDistance(childIndex, frustumPlanes, camPosition);
-                            }
-                        }
+                        float zDepth = Vector3.Dot((Vector3)splatPos - camPosition, camForward);
+                        scratch[i] = (zDepth, originalSplatIdx);
+                    }
+                    else
+                    {
+                        scratch[i] = (0f, originalSplatIdx);
                     }
                 }
+                System.Array.Sort(scratch, 0, count, System.Collections.Generic.Comparer<(float distance, int index)>.Create((a, b) => b.distance.CompareTo(a.distance)));
+                for (int i = 0; i < count; i++)
+                    splatIndices[i] = scratch[i].index;
+            }
+            finally
+            {
+                ArrayPool<(float distance, int index)>.Shared.Return(scratch);
             }
         }
         
+        void ParallelSortVisibleNodes(Vector3 camPosition, Vector3 camForward, bool processOutliersOnMainThread)
+        {
+            int nodeCount = m_VisibleNodes.Count;
+            if (nodeCount == 0)
+            {
+                // Only potential work is outliers
+                if (processOutliersOnMainThread && m_OthersIndices.Count > 0)
+                {
+                    if (m_OthersIndices.Count > 1)
+                        SortSplatsInNode(m_OthersIndices, camPosition, camForward);
+                    m_VisibleSplatIndices.AddRange(m_OthersIndices);
+                }
+                return;
+            }
+            // Clamp desired thread count
+            int hwThreads = Mathf.Max(1, SystemInfo.processorCount - 1); // leave 1 for main
+            int workers = Mathf.Clamp(parallelSortThreads, 1, hwThreads);
+            workers = Mathf.Min(workers, nodeCount); // not more workers than nodes
+            if (workers <= 1)
+            {
+                // Fallback to sequential inside this method
+                if (processOutliersOnMainThread && m_OthersIndices.Count > 0)
+                {
+                    if (m_OthersIndices.Count > 1)
+                        SortSplatsInNode(m_OthersIndices, camPosition, camForward);
+                    m_VisibleSplatIndices.AddRange(m_OthersIndices);
+                }
+                for (int i = 0; i < nodeCount; i++)
+                {
+                    var vn = m_VisibleNodes[i];
+                    if (vn.splatIndices.Count > 1)
+                        SortSplatsInNode(vn.splatIndices, camPosition, camForward);
+                }
+                return;
+            }
+            // Partition nodes into roughly equal contiguous chunks
+            int baseSize = nodeCount / workers;
+            int remainder = nodeCount % workers;
+            Thread[] threads = new Thread[workers];
+            Exception threadException = null;
+            int start = 0;
+            for (int w = 0; w < workers; w++)
+            {
+                int size = baseSize + (w < remainder ? 1 : 0);
+                int localStart = start;
+                int localEnd = localStart + size; // exclusive
+                start = localEnd;
+                threads[w] = new Thread(() =>
+                {
+                    try
+                    {
+                        for (int i = localStart; i < localEnd; i++)
+                        {
+                            var vn = m_VisibleNodes[i];
+                            if (vn.splatIndices.Count > 1)
+                                SortSplatsInNodeThreadSafe(vn.splatIndices, camPosition, camForward);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        threadException = ex;
+                    }
+                });
+                threads[w].Start();
+            }
+            // While workers run, handle outliers on main thread
+            if (processOutliersOnMainThread && m_OthersIndices.Count > 0)
+            {
+                if (m_OthersIndices.Count > 1)
+                    SortSplatsInNode(m_OthersIndices, camPosition, camForward);
+                m_VisibleSplatIndices.AddRange(m_OthersIndices);
+            }
+            // Join workers
+            for (int w = 0; w < workers; w++)
+                threads[w].Join();
+            if (threadException != null)
+            {
+                Debug.LogError($"Parallel splat sorting exception: {threadException}");
+                // As a safety, re-sort sequentially (overwrites order)
+                for (int i = 0; i < nodeCount; i++)
+                {
+                    var vn = m_VisibleNodes[i];
+                    if (vn.splatIndices.Count > 1)
+                        SortSplatsInNode(vn.splatIndices, camPosition, camForward);
+                }
+            }
+        }
+
         void SortSplatsInNode(List<int> splatIndices, Vector3 camPosition, Vector3 camForward)
         {
             int count = splatIndices.Count;
-            
-            // Ensure sort array is large enough for this node
+            if (count <= 1) return;
             if (m_DistanceSortArray == null || m_DistanceSortArray.Length < count)
-            {
                 m_DistanceSortArray = new (float distance, int index)[Mathf.NextPowerOfTwo(count)];
-            }
-            
-            // Calculate Z depth for each splat in this node based on camera forward vector
             for (int i = 0; i < count; i++)
             {
                 int originalSplatIdx = splatIndices[i];
                 if (m_OriginalIndexToPosition.TryGetValue(originalSplatIdx, out float3 splatPos))
                 {
-                    // Project splat position onto camera's forward vector to get depth
                     float zDepth = Vector3.Dot((Vector3)splatPos - camPosition, camForward);
                     m_DistanceSortArray[i] = (zDepth, originalSplatIdx);
                 }
@@ -630,15 +692,41 @@ namespace GaussianSplatting.Runtime
                     m_DistanceSortArray[i] = (0f, originalSplatIdx);
                 }
             }
-            
-            // Sort splats in this node back-to-front (higher Z values first)
-            System.Array.Sort(m_DistanceSortArray, 0, count, 
-                System.Collections.Generic.Comparer<(float distance, int index)>.Create((a, b) => b.distance.CompareTo(a.distance)));
-            
-            // Update the node's splat list with sorted order
+            System.Array.Sort(m_DistanceSortArray, 0, count, System.Collections.Generic.Comparer<(float distance, int index)>.Create((a, b) => b.distance.CompareTo(a.distance)));
             for (int i = 0; i < count; i++)
-            {
                 splatIndices[i] = m_DistanceSortArray[i].index;
+        }
+        
+        void CollectVisibleNodesWithDistance(int nodeIndex, Plane[] frustumPlanes, Vector3 camPosition)
+        {
+            if (nodeIndex >= m_Nodes.Count)
+                return;
+            var node = m_Nodes[nodeIndex];
+            if (!GeometryUtility.TestPlanesAABB(frustumPlanes, node.bounds))
+                return;
+            if (node.isLeaf)
+            {
+                if (node.splatIndices != null && node.splatIndices.Count > 0)
+                {
+                    float nodeDistance = Vector3.Distance(node.bounds.center, camPosition);
+                    m_VisibleNodes.Add(new VisibleNode
+                    {
+                        distance = nodeDistance,
+                        splatIndices = new List<int>(node.splatIndices)
+                    });
+                }
+            }
+            else if (node.childIndices != null)
+            {
+                foreach (var childIndex in node.childIndices)
+                {
+                    if (childIndex < m_Nodes.Count)
+                    {
+                        var childNode = m_Nodes[childIndex];
+                        if ((childNode.splatIndices != null && childNode.splatIndices.Count > 0) || !childNode.isLeaf)
+                            CollectVisibleNodesWithDistance(childIndex, frustumPlanes, camPosition);
+                    }
+                }
             }
         }
     }

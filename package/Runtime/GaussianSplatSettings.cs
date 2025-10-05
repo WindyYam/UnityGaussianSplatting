@@ -58,10 +58,10 @@ namespace GaussianSplatting.Runtime
         static GaussianSplatSettings ms_Instance;
 
         [Tooltip("Gaussian splat transparency rendering algorithm")]
-        public TransparencyMode m_Transparency = TransparencyMode.Stochastic;
+        public TransparencyMode m_Transparency = TransparencyMode.AlphaBlend;
 
         [Tooltip("How to filter temporal transparency")]
-        public TemporalFilter m_TemporalFilter = TemporalFilter.TemporalSimpleMotion;
+        public TemporalFilter m_TemporalFilter = TemporalFilter.None;
         [Tooltip("How much of new frame to blend in. Higher: more noise, lower: more ghosting.")]
         [Range(0.001f, 1.0f)] public float m_FrameInfluence = 0.05f;
         [Tooltip("Strength of history color rectification clamp. Lower: more flickering, higher: more blur/ghosting.")]
@@ -76,13 +76,13 @@ namespace GaussianSplatting.Runtime
         [Tooltip("Enable octree-based frustum culling for improved performance")]
         public bool m_EnableOctreeCulling = true;
         [Tooltip("Maximum octree depth (4-6 recommended)")]
-        [Range(3, 8)] public int m_OctreeMaxDepth = 5;
+        [Range(3, 10)] public int m_OctreeMaxDepth = 6;
         [Tooltip("Maximum splats per octree leaf node (64-256 recommended)")]
-        [Range(32, 512)] public int m_OctreeMaxSplatsPerLeaf = 128;
+        [Range(32, 4096)] public int m_OctreeMaxSplatsPerLeaf = 512;
         [Tooltip("Update culling every N frames (1 = every frame, higher = better performance but less precise)")]
-        [Range(1, 10)] public int m_OctreeCullingUpdateInterval = 1;
+        [Range(1, 20)] public int m_OctreeCullingUpdateInterval = 1;
 
-        [Tooltip("Ratio (0-1) of splats considered as 'screen' splats when building the octree. The remainder are treated as background splats.")]
+        [Tooltip("Ratio (0-1) of splats considered as 'screen' splats when building the octree. The remainder are treated as background splats(Always draw first in alpha blend mode).")]
         [Range(0.0f, 1.0f)] public float m_OctreeSplatRatio = 0.9f;
 
         // Remove the vertex shader mode option since it's now the only mode
