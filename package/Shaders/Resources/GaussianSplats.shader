@@ -264,9 +264,8 @@ FragOut frag (v2f i)
         if (alpha <= cutoff)
             discard;
         alpha = 1;
-        o.motion = half2(i.vel);
     }
-    else
+    else if (sgu_transparencyMode == 1)
     {
         // Halftone ordered dither (4x4 Bayer) for stable stochastic-like transparency.
         // Use screen-space integer pixel coordinates and a small per-instance offset
@@ -295,9 +294,13 @@ FragOut frag (v2f i)
         if (alpha <= cutoff)
             discard;
         alpha = 1;
-        o.motion = half2(i.vel);
     }
-
+    else // sgu_transparencyMode == 2 (AlphaBlend)
+    {
+        i.col.rgb *= alpha; // premultiply
+        // This mode will require proper depth sorting for correct results
+    }
+    o.motion = half2(i.vel);
     o.col = half4(i.col.rgb, alpha);
     return o;
 }

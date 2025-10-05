@@ -10,6 +10,8 @@ namespace GaussianSplatting.Runtime
         Stochastic,
         // no sorting, transparency is stochastic (half tone) and less noisy
         StochasticHalfTone,
+        // regular alpha blending, requires sorting for correct results
+        AlphaBlend,
     }
 
     public enum TemporalFilter
@@ -89,8 +91,8 @@ namespace GaussianSplatting.Runtime
 
         internal bool isDebugRender => m_RenderMode != DebugRenderMode.Splats;
 
-        // Sorting is no longer needed since we only use stochastic rendering
-        internal bool needSorting => m_RenderMode == DebugRenderMode.DebugBoxes;
+        // Sorting is needed for debug box rendering and alpha blending mode
+        internal bool needSorting => m_RenderMode == DebugRenderMode.DebugBoxes || m_Transparency == TransparencyMode.AlphaBlend;
 
         internal bool resourcesFound { get; private set; }
         bool resourcesLoadAttempted;

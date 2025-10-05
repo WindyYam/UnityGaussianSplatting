@@ -201,11 +201,35 @@ namespace GaussianSplatting.Runtime
             cmb.SetBufferData(m_GlobalUniforms, sgu);
             m_FrameOffset++;
 
-            // Always use stochastic transparency in vertex shader mode
-            bool stochastic = !settings.isDebugRender;
-            displayMat.SetInt(GaussianSplatRenderer.Props.SrcBlend, (int)(stochastic ? BlendMode.One : BlendMode.OneMinusDstAlpha));
-            displayMat.SetInt(GaussianSplatRenderer.Props.DstBlend, (int)(stochastic ? BlendMode.Zero : BlendMode.One));
-            displayMat.SetInt(GaussianSplatRenderer.Props.ZWrite, stochastic ? 1 : 0);
+            // Set blend mode based on transparency mode
+            if (settings.isDebugRender)
+            {
+                // Debug rendering uses different blend settings
+                displayMat.SetInt(GaussianSplatRenderer.Props.SrcBlend, (int)BlendMode.OneMinusDstAlpha);
+                displayMat.SetInt(GaussianSplatRenderer.Props.DstBlend, (int)BlendMode.One);
+                displayMat.SetInt(GaussianSplatRenderer.Props.ZWrite, 0);
+            }
+            else
+            {
+                // Normal splat rendering - choose blend mode based on transparency mode
+                switch (settings.m_Transparency)
+                {
+                    case TransparencyMode.Stochastic:
+                    case TransparencyMode.StochasticHalfTone:
+                        // Stochastic transparency with binary alpha
+                        displayMat.SetInt(GaussianSplatRenderer.Props.SrcBlend, (int)BlendMode.One);
+                        displayMat.SetInt(GaussianSplatRenderer.Props.DstBlend, (int)BlendMode.Zero);
+                        displayMat.SetInt(GaussianSplatRenderer.Props.ZWrite, 1);
+                        break;
+                    
+                    case TransparencyMode.AlphaBlend:
+                        // Standard alpha blending
+                        displayMat.SetInt(GaussianSplatRenderer.Props.SrcBlend, (int)BlendMode.OneMinusDstAlpha);
+                        displayMat.SetInt(GaussianSplatRenderer.Props.DstBlend, (int)BlendMode.One);
+                        displayMat.SetInt(GaussianSplatRenderer.Props.ZWrite, 0);
+                        break;
+                }
+            }
 
             foreach (var kvp in m_ActiveSplats)
             {
